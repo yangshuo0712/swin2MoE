@@ -1,0 +1,7 @@
+[tool.basedpyright]
+extraPaths = [
+    '/home/op7080/Remote/root/miniconda3/envs/swin2_mose/lib/python3.12/site-packages/',
+    './src'
+]
+reportUnusedCallResult = false
+typeCheckingMode = "basic"

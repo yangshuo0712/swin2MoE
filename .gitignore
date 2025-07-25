@@ -1,0 +1,9 @@
+nohup.out
+
+/data/
+/output/
+/datasets/
+/images/
+
+*.pyc
+
