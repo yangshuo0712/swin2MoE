@@ -21,9 +21,9 @@ torchrun \
   --master_addr 127.0.0.1 \
   --master_port 29500 \
   src/main.py \
-    --config cfgs/swin2_mose/sen2venus_2x_s2m.yml \
+    --config cfg_n/sen2venus_exp4_2x_v5.yml \
     --phase train \
     --batch_size 1 \
     --num_workers 4 \
     --distributed true \
-    --output ./output/2x_ddp
+    --output ./output/4x_ddp

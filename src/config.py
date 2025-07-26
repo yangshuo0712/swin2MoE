@@ -1,4 +1,3 @@
-from typing import override
 import yaml
 import os
 
@@ -7,7 +6,7 @@ from functools import reduce
 
 
 class DotDict(EasyDict):
-    def __getattr__(self, k: str):
+    def __getattr__(self, k):
         try:
             v = self[k]
         except KeyError:

@@ -21,17 +21,6 @@ import numpy as np
 from .utils import Mlp as MLP
 
 
-class MoEExpert(nn.Module):
-    def __init__(self, mlp):
-        super(MoEExpert, self).__init__()
-        self.mlp = mlp
-
-    def forward(self, x):
-        if len(x) == 0:
-            return x
-        return self.mlp(x)
-
-
 class SparseDispatcher(object):
     """Helper for implementing a mixture of experts.
     The purpose of this class is to create input minibatches for the
@@ -63,9 +52,9 @@ class SparseDispatcher(object):
     `Tensor`s for expert i only the batch elements for which `gates[b, i] > 0`.
     """
 
-    def __init__(self, num_experts, gates, k):
+    def __init__(self, num_experts, gates):
         """Create a SparseDispatcher."""
-        self.k = k
+
         self._gates = gates
         self._num_experts = num_experts
         # sort experts
@@ -126,10 +115,11 @@ class SparseDispatcher(object):
         return combined
 
     def smartly_combine(self, stitched, cnn_combine):
-        idxes = torch.stack([
-            self._batch_index == i
-            for i in self._batch_index.unique()]
-        ).nonzero()[:, 1].reshape(-1, self.k)
+        idxes = []
+        for i in self._batch_index.unique():
+            idx = (self._batch_index == i).nonzero().squeeze(1)
+            idxes.append(idx)
+        idxes = torch.stack(idxes)
         return cnn_combine(stitched[idxes]).squeeze(1)
 
     def expert_to_gates(self):
@@ -147,14 +137,14 @@ def build_experts(experts_cfg, default_cfg, num_experts):
     if experts_cfg is None:
         # old build way
         return nn.ModuleList([
-            MoEExpert(MLP(*default_cfg))
+            MLP(*default_cfg)
             for i in range(num_experts)])
     # new build way: mix mlp with leff
     experts = []
     for e_cfg in experts_cfg:
         type_ = e_cfg.pop('type')
         if type_ == 'mlp':
-            experts.append(MoEExpert(MLP(*default_cfg)))
+            experts.append(MLP(*default_cfg))
     return nn.ModuleList(experts)
 
 
@@ -188,8 +178,7 @@ class MoE(nn.Module):
             (self.input_size, self.hidden_size, self.output_size),
             num_experts)
         self.w_gate = nn.Parameter(torch.zeros(input_size, num_experts), requires_grad=True)
-        if with_noise:
-            self.w_noise = nn.Parameter(torch.zeros(input_size, num_experts), requires_grad=True)
+        self.w_noise = nn.Parameter(torch.zeros(input_size, num_experts), requires_grad=True)
 
         self.x_gating = x_gating
         if self.x_gating == 'conv1d':
@@ -326,7 +315,7 @@ class MoE(nn.Module):
         loss = self.cv_squared(importance) + self.cv_squared(load)
         loss *= loss_coef
 
-        dispatcher = SparseDispatcher(self.num_experts, gates, self.k)
+        dispatcher = SparseDispatcher(self.num_experts, gates)
         expert_inputs = dispatcher.dispatch(x)
         gates = dispatcher.expert_to_gates()
         expert_outputs = [self.experts[i](expert_inputs[i])

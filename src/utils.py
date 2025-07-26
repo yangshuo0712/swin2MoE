@@ -2,10 +2,18 @@ import torch
 import importlib
 import numpy as np
 import random
+import torch.distributed as dist
 
 from enum import Enum
 from torchmetrics.classification import MulticlassF1Score
 
+
+# --- DDP ---
+def is_dist_avail_and_initialized():
+    return dist.is_available() and dist.is_initialized()
+
+def is_main_process():
+    return (not is_dist_avail_and_initialized()) or dist.get_rank() == 0
 
 def set_deterministic(seed):
     torch.manual_seed(seed)
@@ -35,12 +43,10 @@ class Summary(Enum):
 
 
 class AverageMeter(object):
-    def __init__(self, name, fmt=":f", summary_type=Summary.AVERAGE,
-                 save_values=False):
+    def __init__(self, name, fmt=":f", summary_type=Summary.AVERAGE):
         self.name = name
         self.fmt = fmt
         self.summary_type = summary_type
-        self.save_values = save_values
         self.reset()
 
     def reset(self):
@@ -48,14 +54,15 @@ class AverageMeter(object):
         self.avg = 0
         self.sum = 0
         self.count = 0
-        if self.save_values:
-            self.vals = []
 
     def update(self, val, n=1):
-        if self.save_values:
-            self.vals.append(val)
-        self.val = val
-        self.sum += val * n
+        # self.val = val
+        # self.sum += val * n
+        # self.count += n
+        # self.avg = self.sum / self.count
+        v = val.item() if torch.is_tensor(val) else float(val)
+        self.val = v
+        self.sum += v * n
         self.count += n
         self.avg = self.sum / self.count
 
@@ -85,16 +92,6 @@ class AverageMeter(object):
                 "Invalid summary type {}".format(self.summary_type))
 
         return fmtstr.format(**self.__dict__)
-
-    @property
-    def values(self):
-        if isinstance(self.vals, list):
-            return torch.stack(self.vals)
-        return self.vals
-
-    @values.setter
-    def values(self, vals):
-        self.vals = vals
 
 
 class F1AverageMeter(AverageMeter):
@@ -132,21 +129,16 @@ def set_required_grad(model, value):
     for parameters in model.parameters():
         parameters.requires_grad = value
 
-
-def w_count_moe(model, cfg):
-    to_exclude = 0
-    count_expert_off = cfg.super_res.model.MoE_config.num_experts - \
-        cfg.super_res.model.MoE_config.k
-    for layer in model.layers:
-        for block in layer.residual_group.blocks:
-            w_expert = w_count(block.mlp.experts[0])
-            to_exclude += count_expert_off * w_expert
-    return w_count(model) - to_exclude
-
-
-def print_weights(model, cfg):
-    print('Total: ', w_count(model))
-    try:
-        print('Active: ', w_count_moe(model, cfg))
-    except AttributeError:
-        pass
+def sync_average_meters(meters, device):
+    """
+    meters: OrderedDict[str, AverageMeter]
+    operate the sum and count on every meter, then cal avg local.
+    """
+    if not (dist.is_available() and dist.is_initialized()):
+        return
+    for m in meters.values():
+            stats = torch.tensor([m.sum, m.count], dtype=torch.float64, device=device)
+            dist.all_reduce(stats, op=dist.ReduceOp.SUM)
+            m.sum = stats[0].item()
+            m.count = stats[1].item()
+            m.avg = m.sum / m.count if m.count > 0 else 0.0

@@ -1,4 +1,4 @@
-__base__: sen2venus_4x_s2m.yml
+__base__: sen2venus_exp4_4x_v3.yml
 dataset:
   root_path: data/oli2msi
   collate_fn: mods.v6.collate_fn
