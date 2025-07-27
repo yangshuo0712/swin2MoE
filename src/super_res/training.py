@@ -52,7 +52,7 @@ def train(train_dloader, val_dloader, cfg):
                 model,
                 device_ids=[device.index],
                 output_device=device.index,
-                find_unused_parameters=False,
+                find_unused_parameters=True,
                 broadcast_buffers=False,
                 )
     # -----------
@@ -99,19 +99,21 @@ def train(train_dloader, val_dloader, cfg):
             cfg,
             scaler)
 
-    if (e + 1) % eval_every == 0:
-        dist.barrier()
-        result = validate(model, val_dloader, metrics, e,
-                          writer if is_main_process() else None,
-                          'test', cfg)
-        if is_main_process():
-            cfg.epoch = e + 1
-            save_metrics(result, cfg)
-        dist.barrier()
+        if (e + 1) % eval_every == 0:
+            if cfg.distributed:
+                dist.barrier()
+            result = validate(model, val_dloader, metrics, e,
+                              writer if is_main_process() else None,
+                              'test', cfg)
+            if is_main_process():
+                cfg.epoch = e + 1
+                save_metrics(result, cfg)
+            if cfg.distributed:
+                dist.barrier()
 
-        # save_state_dict_model(model, optimizer, e, index, cfg)
-        if is_main_process():
-            save_state_dict_model(model, optimizer, e, index, cfg)
+            # save_state_dict_model(model, optimizer, e, index, cfg)
+            if is_main_process():
+                save_state_dict_model(model, optimizer, e, index, cfg)
 
 def train_epoch(model, train_dloader, losses, optimizer, epoch, writer,
                 index, cfg, scaler=None):

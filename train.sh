@@ -13,6 +13,7 @@ cd "$PROJECT_DIR"
 
 # Select visible GPUs (physical IDs 1 and 2)
 export CUDA_VISIBLE_DEVICES=1,2
+export TORCH_DISTRIBUTED_DEBUG=DETAIL
 
 # Launch training with torchrun
 torchrun \
@@ -23,7 +24,8 @@ torchrun \
   src/main.py \
     --config cfg_n/sen2venus_exp4_2x_v5.yml \
     --phase train \
-    --batch_size 1 \
+    --batch_size 2 \
     --num_workers 4 \
     --distributed true \
+    --AMP true \
     --output ./output/4x_ddp

@@ -104,8 +104,10 @@ class SparseDispatcher(object):
 
         if multiply_by_gates:
             stitched = stitched.mul(self._nonzero_gates.unsqueeze(1))
+        # zeros = torch.zeros((self._gates.size(0),) + expert_out[-1].shape[1:],
+        #                     requires_grad=True, device=stitched.device)
         zeros = torch.zeros((self._gates.size(0),) + expert_out[-1].shape[1:],
-                            requires_grad=True, device=stitched.device)
+                                    device=stitched.device, dtype=stitched.dtype)
         # combine samples that have been processed by the same k experts
 
         if cnn_combine is not None:
@@ -255,6 +257,41 @@ class MoE(nn.Module):
         prob = torch.where(is_in, prob_if_in, prob_if_out)
         return prob
 
+    # def noisy_top_k_gating(self, x, train, noise_epsilon=1e-2):
+    #     """Noisy top-k gating.
+    #       See paper: https://arxiv.org/abs/1701.06538.
+    #       Args:
+    #         x: input Tensor with shape [batch_size, input_size]
+    #         train: a boolean - we only add noise at training time.
+    #         noise_epsilon: a float
+    #       Returns:
+    #         gates: a Tensor with shape [batch_size, num_experts]
+    #         load: a Tensor with shape [num_experts]
+    #     """
+    #     clean_logits = x @ self.w_gate
+    #     if self.noisy_gating and train:
+    #         raw_noise_stddev = x @ self.w_noise
+    #         noise_stddev = ((self.softplus(raw_noise_stddev) + noise_epsilon))
+    #         noisy_logits = clean_logits + (torch.randn_like(clean_logits) * noise_stddev)
+    #         logits = noisy_logits
+    #     else:
+    #         logits = clean_logits
+    #
+    #     # calculate topk + 1 that will be needed for the noisy gates
+    #     top_logits, top_indices = logits.topk(min(self.k + 1, self.num_experts), dim=1)
+    #     top_k_logits = top_logits[:, :self.k]
+    #     top_k_indices = top_indices[:, :self.k]
+    #     top_k_gates = self.softmax(top_k_logits)
+    #
+    #     zeros = torch.zeros_like(logits, requires_grad=True)
+    #     gates = zeros.scatter(1, top_k_indices, top_k_gates)
+    #
+    #     if self.noisy_gating and self.k < self.num_experts and train:
+    #         load = (self._prob_in_top_k(clean_logits, noisy_logits, noise_stddev, top_logits)).sum(0)
+    #     else:
+    #         load = self._gates_to_load(gates)
+    #     return gates, load
+
     def noisy_top_k_gating(self, x, train, noise_epsilon=1e-2):
         """Noisy top-k gating.
           See paper: https://arxiv.org/abs/1701.06538.
@@ -266,14 +303,17 @@ class MoE(nn.Module):
             gates: a Tensor with shape [batch_size, num_experts]
             load: a Tensor with shape [num_experts]
         """
-        clean_logits = x @ self.w_gate
-        if self.noisy_gating and train:
-            raw_noise_stddev = x @ self.w_noise
-            noise_stddev = ((self.softplus(raw_noise_stddev) + noise_epsilon))
-            noisy_logits = clean_logits + (torch.randn_like(clean_logits) * noise_stddev)
-            logits = noisy_logits
-        else:
-            logits = clean_logits
+        use_amp = torch.is_autocast_enabled()
+        with torch.autocast(device_type='cuda', enabled=False):
+            x_f32 = x.float()
+            clean_logits = x_f32 @ self.w_gate.float()
+            if self.noisy_gating and train:
+                raw_noise_stddev = x_f32 @ self.w_noise.float()
+                noise_stddev = self.softplus(raw_noise_stddev) + noise_epsilon
+                noisy_logits = clean_logits + torch.randn_like(clean_logits) * noise_stddev
+                logits = noisy_logits
+            else:
+                logits = clean_logits
 
         # calculate topk + 1 that will be needed for the noisy gates
         top_logits, top_indices = logits.topk(min(self.k + 1, self.num_experts), dim=1)
@@ -281,14 +321,15 @@ class MoE(nn.Module):
         top_k_indices = top_indices[:, :self.k]
         top_k_gates = self.softmax(top_k_logits)
 
-        zeros = torch.zeros_like(logits, requires_grad=True)
+        zeros = torch.zeros_like(logits, dtype=top_k_gates.dtype)
         gates = zeros.scatter(1, top_k_indices, top_k_gates)
 
         if self.noisy_gating and self.k < self.num_experts and train:
             load = (self._prob_in_top_k(clean_logits, noisy_logits, noise_stddev, top_logits)).sum(0)
         else:
             load = self._gates_to_load(gates)
-        return gates, load
+
+        return gates.to(x.dtype), load.to(x.dtype)
 
     def forward(self, x, loss_coef=1e-2):
         """Args:
