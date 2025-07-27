@@ -7,7 +7,6 @@ import torch.distributed as dist
 from enum import Enum
 from torchmetrics.classification import MulticlassF1Score
 
-
 # --- DDP ---
 def is_dist_avail_and_initialized():
     return dist.is_available() and dist.is_initialized()
@@ -67,16 +66,23 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
     def __str__(self):
-        self.avg_item = self.avg.tolist()
-        fmtstr = "{avg_item" + self.fmt + "}"
-        try:
-            return fmtstr.format(**self.__dict__)
-        except TypeError:
-            # print a list of elements
-            fmtstr = "{" + self.fmt + "}"
-            return ' '.join([
-                fmtstr for _ in range(len(self.avg_item))
-            ]).format(*self.avg_item)
+        # self.avg_item = self.avg.tolist()
+        # fmtstr = "{avg_item" + self.fmt + "}"
+        # try:
+        #     return fmtstr.format(**self.__dict__)
+        # except TypeError:
+        #     # print a list of elements
+        #     fmtstr = "{" + self.fmt + "}"
+        #     return ' '.join([
+        #         fmtstr for _ in range(len(self.avg_item))
+        #     ]).format(*self.avg_item)
+        if torch.is_tensor(self.avg):
+                avg_val = self.avg.item() if self.avg.ndim == 0 else self.avg.tolist()
+        else:
+                avg_val = self.avg
+
+        fmtstr = "{avg" + self.fmt + "}"
+        return fmtstr.format(avg=avg_val)
 
     def summary(self):
         if self.summary_type is Summary.NONE:
@@ -130,15 +136,15 @@ def set_required_grad(model, value):
         parameters.requires_grad = value
 
 def sync_average_meters(meters, device):
-    """
-    meters: OrderedDict[str, AverageMeter]
-    operate the sum and count on every meter, then cal avg local.
-    """
+    """Collect all meters' (sum,count) once, then recompute avg locally."""
     if not (dist.is_available() and dist.is_initialized()):
         return
-    for m in meters.values():
-            stats = torch.tensor([m.sum, m.count], dtype=torch.float64, device=device)
-            dist.all_reduce(stats, op=dist.ReduceOp.SUM)
-            m.sum = stats[0].item()
-            m.count = stats[1].item()
-            m.avg = m.sum / m.count if m.count > 0 else 0.0
+    buf = torch.stack([
+        torch.tensor([m.sum, m.count], dtype=torch.float64, device=device)
+        for m in meters.values()
+    ])                                   # [num_meters, 2]
+    dist.all_reduce(buf, op=dist.ReduceOp.SUM)
+    for (m, stats) in zip(meters.values(), buf):
+        m.sum = stats[0].item()
+        m.count = max(int(stats[1].item()), 1)
+        m.avg = m.sum / m.count

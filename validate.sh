@@ -25,9 +25,10 @@ torchrun \
   --master_port 29500 \
   src/main.py \
     --config cfg_n/sen2venus_exp4_2x_v5.yml \
-    --phase train \
+    --phase test \
     --batch_size 2 \
     --num_workers 4 \
+    --epoch 70 \
     --distributed true \
     --AMP true \
-    --output ./output/4x_ddp
+    --eval_method bicubic

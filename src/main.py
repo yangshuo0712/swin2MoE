@@ -118,7 +118,7 @@ def init_distributed(cfg):
 
 def cleanup_distributed(cfg):
     if getattr(cfg, "distributed", False) and dist.is_initialized():
-        dist.barrier()
+        dist.barrier(device_ids=[cfg.local_rank])
         dist.destroy_process_group()
 
 def main(cfg):

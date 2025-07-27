@@ -39,37 +39,12 @@ def validate(g_model, val_dloader, metrics, epoch, writer, mode, cfg):
             filter_outliers=False,
             use_minmax=use_minmax)
 
-    # with torch.no_grad():
-    #     for j, batch in tqdm(
-    #             enumerate(val_dloader), total=len(val_dloader),
-    #             desc='Val Epoch: %d / %d' % (epoch + 1, cfg.epochs)):
-    #         hr = batch["hr"].to(device=cfg.device, non_blocking=True)
-    #         lr = batch["lr"].to(device=cfg.device, non_blocking=True)
-    #
-    #         # Use the generator model to generate a fake sample
-    #         sr = g_model(lr)
-    #
-    #         if not torch.is_tensor(sr):
-    #             sr, _ = sr
-    #
-    #         sr = sr.contiguous()
-    #
-    #         # denormalize to original values
-    #         hr, sr, lr = denorm(hr, sr, lr)
-    #
-    #         # normalize [0, 1] using also the outliers to evaluate
-    #         hr, sr, lr = evaluable(hr, sr, lr)
-    #
-    #         # Statistical loss value for terminal data output
-    #         for k, fun in metrics.items():
-    #             for i in range(len(sr)):
-    #                 avg_metrics[k].update(fun(sr[i][None], hr[i][None]))
-
     amp_enabled = getattr(cfg, 'AMP', False)
     with torch.inference_mode(), torch.amp.autocast('cuda', enabled=amp_enabled):
         for j, batch in tqdm(
                 enumerate(val_dloader), total=len(val_dloader),
-                desc='Val Epoch: %d / %d' % (epoch + 1, cfg.epochs)):
+                desc='Val Epoch: %d / %d' % (epoch + 1, cfg.epochs),
+                disable=not is_main_process()):
             hr = batch["hr"].to(device=cfg.device, non_blocking=True)
             lr = batch["lr"].to(device=cfg.device, non_blocking=True)
 
@@ -90,16 +65,17 @@ def validate(g_model, val_dloader, metrics, epoch, writer, mode, cfg):
 
     # --- sync all metrics ---
     sync_average_meters(avg_metrics, cfg.device)
-    # ------------------------
     if writer is not None and is_main_process():
              for k, v in avg_metrics.items():
-                 writer.add_scalar("{}/{}".format(mode, k), v.avg.item(), epoch+1)
+                 val = v.avg.item() if isinstance(v.avg, torch.Tensor) else float(v.avg)
+                 # writer.add_scalar("{}/{}".format(mode, k), v.avg.item(), epoch+1)
+                 writer.add_scalar(f"{mode}/{k}", val, epoch+1)
 
     if cfg.get('eval_return_to_train', True):
         g_model.train()
 
     return avg_metrics
-
+    # ------------------------
 
 def build_eval_metrics(cfg):
     # Create an IQA evaluation model
@@ -131,11 +107,12 @@ def build_avg_metrics():
 
 def main(val_dloader, cfg, save_metrics=True):
     model = load_eval_method(cfg)
-    print('build eval metrics')
+    if is_main_process():
+        print('build eval metrics')
     metrics = build_eval_metrics(cfg)
     result = validate(
         model, val_dloader, metrics, cfg.epoch, None, 'test', cfg)
-    if save_metrics:
+    if save_metrics and is_main_process():
         do_save_metrics(result, cfg)
     return result
 

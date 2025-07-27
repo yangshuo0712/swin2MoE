@@ -73,12 +73,11 @@ def train(train_dloader, val_dloader, cfg):
     except FileNotFoundError:
         print('no checkpoint found')
 
-    # print('build eval metrics')
+    if is_main_process():
+        print('build eval metrics')
     # metrics = build_eval_metrics(cfg)
 
-    if is_main_process():
-        print('main_proc: build eval metrics')
-        metrics = build_eval_metrics(cfg)
+    metrics = build_eval_metrics(cfg)
 
     for e in range(begin_epoch, cfg.epochs):
 
