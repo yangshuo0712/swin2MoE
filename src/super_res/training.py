@@ -110,16 +110,21 @@ def train(train_dloader, val_dloader, cfg):
             if cfg.distributed:
                 dist.barrier()
 
-            # save_state_dict_model(model, optimizer, e, index, cfg)
-            if is_main_process():
-                save_state_dict_model(model, optimizer, e, index, cfg)
+            save_state_dict_model(model, optimizer, e, index, cfg)
 
 def train_epoch(model, train_dloader, losses, optimizer, epoch, writer,
                 index, cfg, scaler=None):
+
+    debug_iters = getattr(cfg, "debug_iters", None)
+
     weights = cfg.losses.weights
     for index, batch in tqdm(
             enumerate(train_dloader, index), total=len(train_dloader),
-            desc='Epoch: %d / %d' % (epoch + 1, cfg.epochs)):
+            desc='Epoch: %d / %d' % (epoch + 1, cfg.epochs),
+            disable=not is_main_process()):
+
+        if debug_iters is not None and index >= debug_iters:
+            break
 
         # Transfer in-memory data to CUDA devices to speed up training
         hr = batch["hr"].to(device=cfg.device, non_blocking=True)

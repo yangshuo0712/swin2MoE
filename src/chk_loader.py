@@ -4,6 +4,7 @@ import numpy as np
 import torch.distributed as dist
 from utils import is_main_process, is_dist_avail_and_initialized
 from typing import Tuple, Dict, Any
+# import pdb
 
 def unwrap_model(model):
     "Return the underlying model if wrapped by DDP/DataParallel."
@@ -24,6 +25,7 @@ def load_checkpoint(cfg) -> Dict[str, Any]:
     """
     Return a checkpoint dict loaded to cfg.device.
     """
+    # pdb.set_trace()
     dir_chk = os.path.join(cfg.output, 'checkpoints')
     if cfg.epoch != -1:
         path = os.path.join(dir_chk, f'model-{cfg.epoch:02d}.pt')
@@ -34,7 +36,8 @@ def load_checkpoint(cfg) -> Dict[str, Any]:
         except (IndexError, FileNotFoundError):
             raise FileNotFoundError()
 
-    print(f'load file {path}')
+    if is_main_process():
+        print(f'load file {path}')
     if not os.path.exists(path):
         raise FileNotFoundError()
 
@@ -113,21 +116,25 @@ def save_state_dict_model(model, optimizer, epoch, index, cfg):
     if n_epoch % cfg.snapshot_interval != 0:
         return
 
-    if not is_main_process():
-        return
-
-    dir_chk = os.path.join(cfg.output, 'checkpoints')
-    os.makedirs(dir_chk, exist_ok=True)
-    path = os.path.join(dir_chk, f'model-{n_epoch:02d}.pt')
-
-    checkpoint = {
-        'epoch': epoch,
-        'model_state_dict': unwrap_model(model).state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'index': index,
-    }
-
-    torch.save(checkpoint, path)
     # Optionally sync to be safe when others continue after save
+    # ---------- Sync BEFORE saving ----------
+    if is_dist_avail_and_initialized():
+        dist.barrier()
+
+    if is_main_process():
+        dir_chk = os.path.join(cfg.output, 'checkpoints')
+        os.makedirs(dir_chk, exist_ok=True)
+        path = os.path.join(dir_chk, f'model-{n_epoch:02d}.pt')
+
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': unwrap_model(model).state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'index': index,
+        }
+
+        torch.save(checkpoint, path)
+
+    # ---------- Sync AFTER saving ----------
     if is_dist_avail_and_initialized():
         dist.barrier()

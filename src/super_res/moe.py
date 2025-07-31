@@ -17,6 +17,7 @@ import torch.nn as nn
 from torch.distributions.normal import Normal
 from copy import deepcopy
 import numpy as np
+from utils import is_main_process
 
 from .utils import Mlp as MLP
 
@@ -173,6 +174,12 @@ class MoE(nn.Module):
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.k = k
+        #---------- Top1Gate ---------
+        if self.k == 1:
+            from .gates import Top1Gate
+            self.gate_layer = Top1Gate(input_size, num_experts, noisy_gating)
+        #-----------------------------
+
         self.with_noise = with_noise
         # instantiate experts
         self.experts = build_experts(
@@ -348,8 +355,19 @@ class MoE(nn.Module):
         else:
             xg = x.mean(1)
 
-        gates, load = self.noisy_top_k_gating(
-            xg, self.training and self.with_noise)
+        # gates, load = self.noisy_top_k_gating(
+        #     xg, self.training and self.with_noise)
+
+        #--------------------------------
+        if self.k == 1:
+            _, scores, gates = self.gate_layer(xg)
+            load = self._gates_to_load(gates=gates)
+        else:
+            gates, load = self.noisy_top_k_gating(
+                    xg, self.training and self.with_noise
+                    )
+        #--------------------------------
+
         # calculate importance loss
         importance = gates.sum(0)
         #

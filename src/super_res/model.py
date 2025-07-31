@@ -1,7 +1,8 @@
-
+from utils import is_main_process
 def build_model(cfg):
     version = cfg.super_res.get('version', 'v1')
-    print('load super_res {}'.format(version))
+    if is_main_process():
+        print('load super_res {}'.format(version))
 
     if version == 'v1':
         from .network_swinir import SwinIR as SRModel

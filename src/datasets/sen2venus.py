@@ -8,7 +8,7 @@ from functools import lru_cache
 from torch.utils.data import Dataset, DataLoader, DistributedSampler
 
 from utils import load_fun
-
+from utils import is_main_process
 
 @lru_cache(maxsize=10)
 def cached_torch_load(filename):
@@ -33,7 +33,8 @@ class Sen2VenusDataset(Dataset):
                 self.files))
 
     def _load_files(self):
-        print('load {} files from {}'.format(self.relname, self.fdir))
+        if is_main_process():
+            print('load {} files from {}'.format(self.relname, self.fdir))
         self.files = []
         for dirpath, dirs, files in os.walk(self.fdir):
             for filename in files:
@@ -57,7 +58,7 @@ def _build_loader(cfg, dataset, is_train, collate_fn):
         sampler = DistributedSampler(
                 dataset,
                 shuffle=is_train,
-                drop_last=False
+                drop_last=is_train
                 )
         shuffle = False
     else:

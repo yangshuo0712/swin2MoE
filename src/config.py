@@ -3,6 +3,7 @@ import os
 
 from easydict import EasyDict
 from functools import reduce
+from utils import is_main_process
 
 
 class DotDict(EasyDict):
@@ -45,7 +46,8 @@ class DotDict(EasyDict):
 
 
 def parse_config(args):
-    print('load config file ', args.config)
+    if is_main_process():
+        print('load config file ', args.config)
     cfg = EasyDict(load_config(args.config))
 
     var_args = vars(args)

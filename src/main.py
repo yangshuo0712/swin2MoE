@@ -9,8 +9,7 @@ from visualize import main as vis_main
 from validation import main as val_main, print_metrics as val_print_metrics, \
         load_metrics
 from debug import measure_avg_time
-
-
+# import pdb
 def parse_configs():
     parser = argparse.ArgumentParser(description='SuperRes model')
 
@@ -25,6 +24,9 @@ def parse_configs():
     parser.add_argument('--AMP', type=bool, default=False,
                         help='denote whether use AMP')
     # ------------
+    parser.add_argument('--debug_iters', type=int, default=None,
+                        help='early exit when debuging')
+
     # For training and testing
     parser.add_argument('--config',
                         default="cfgs/sen2venus_v26_8.yml",
@@ -122,11 +124,11 @@ def cleanup_distributed(cfg):
         dist.destroy_process_group()
 
 def main(cfg):
+    # pdb.set_trace()
     init_distributed(cfg)
-
     load_dataset_fun = load_fun(cfg.dataset.get(
         'load_dataset', 'datasets.sen2venus.load_dataset'))
-
+    
     if cfg.phase == 'avg_time':
         print(measure_avg_time(cfg))
     elif cfg.phase == 'train':

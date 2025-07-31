@@ -11,6 +11,8 @@ from metrics import CC, SAM, ERGAS, piq_psnr, piq_ssim, \
     piq_rmse
 from chk_loader import load_checkpoint
 
+# import pdb
+
 def ddp_reduce_avg_metrics(avg_metrics, device):
     world = dist.get_world_size()
     for m in avg_metrics.values():
@@ -40,11 +42,17 @@ def validate(g_model, val_dloader, metrics, epoch, writer, mode, cfg):
             use_minmax=use_minmax)
 
     amp_enabled = getattr(cfg, 'AMP', False)
+    debug_iters = getattr(cfg, "debug_iters", None)
+
     with torch.inference_mode(), torch.amp.autocast('cuda', enabled=amp_enabled):
         for j, batch in tqdm(
                 enumerate(val_dloader), total=len(val_dloader),
                 desc='Val Epoch: %d / %d' % (epoch + 1, cfg.epochs),
                 disable=not is_main_process()):
+
+            if debug_iters is not None and j >= debug_iters:
+                break
+
             hr = batch["hr"].to(device=cfg.device, non_blocking=True)
             lr = batch["lr"].to(device=cfg.device, non_blocking=True)
 
@@ -106,6 +114,7 @@ def build_avg_metrics():
 
 
 def main(val_dloader, cfg, save_metrics=True):
+    # pdb.set_trace()
     model = load_eval_method(cfg)
     if is_main_process():
         print('build eval metrics')
@@ -162,12 +171,16 @@ def print_metrics(metrics):
 
 
 def load_eval_method(cfg):
+
+    # pdb.set_trace()
     if cfg.eval_method is None:
         vis = cfg.visualize
         model = load_fun(vis.get('model'))(cfg)
         # Load model state dict
         try:
             checkpoint = load_checkpoint(cfg)
+            if is_main_process():
+                print('loading eval method.')
             _, _ = load_fun(vis.get('checkpoint'))(model, checkpoint)
         except Exception as e:
             print(e)
@@ -175,7 +188,8 @@ def load_eval_method(cfg):
 
         return model
 
-    print('load non-dl upsampler: {}'.format(cfg.eval_method))
+    if is_main_process():
+        print('load non-dl upsampler: {}'.format(cfg.eval_method))
     return NonDLEvalMethod(cfg)
 
 

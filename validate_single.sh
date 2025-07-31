@@ -18,18 +18,13 @@ export TORCH_DISTRIBUTED_DEBUG=DETAIL
 # export NCCL_DEBUG_SUBSYS=ALL
 
 # Launch training with torchrun
-torchrun \
-  --nnodes 1 \
-  --nproc-per-node 2 \
-  --master_addr 127.0.0.1 \
-  --master_port 29500 \
+python \
   src/main.py \
-    --config cfg_n/sen2venus_exp6_2x_v6_top1.yml \
-    --phase train \
+    --config cfg_n/sen2venus_exp4_2x_v5.yml \
+    --phase test \
     --batch_size 2 \
     --num_workers 4 \
-    --distributed true \
+    --epoch 1 \
+    --output output/4x_DDP \
     --AMP true \
-    --output ./output/2x_DDP_with_top1
-    # --config cfg_n/sen2venus_exp4_2x_v5.yml \
-    # --debug_iters 10 \
+    # --eval_method bicubic

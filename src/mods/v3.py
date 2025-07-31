@@ -3,11 +3,12 @@ import torch
 from torchvision import transforms
 from torch.utils.data import default_collate
 from tqdm import tqdm
-
+from utils import is_main_process
 
 def collate_fn(cfg, hr_name, lr_name):
-    print('collate_fn hr field: ', hr_name)
-    print('collate_fn lr field: ', lr_name)
+    if is_main_process():
+        print('collate_fn hr field: ', hr_name)
+        print('collate_fn lr field: ', lr_name)
 
     def do_nothing(x):
         return x
