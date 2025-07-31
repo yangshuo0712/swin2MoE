@@ -1,4 +1,4 @@
-__base__: sen2venus_exp6_v5_top1.yml
+__base__: sen2venus_exp6_v5.yml
 dataset:
   root_path: data/sen2venus
   stats:

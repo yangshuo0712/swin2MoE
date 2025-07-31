@@ -1,0 +1,25 @@
+__base__: sen2venus_exp2_v5.yml
+losses:
+  weights:
+    moe: 0.2
+super_res:
+  model:
+    mlp_ratio: 1
+    MoE_config:
+      k: 2
+      num_experts: 8
+      with_noise: false
+      with_smart_merger: v1
+      x_gating: spatial
+      dynamic_route: true
+      conf_threshold: 0.5
+      experts:
+        - {type: mlp, hid_ratio: 1.0}
+        - {type: mlp, hid_ratio: 1.0}
+        - {type: mlp, hid_ratio: 0.75}
+        - {type: mlp, hid_ratio: 0.75}
+        - {type: leff, hid_ratio: 1.0}
+        - {type: leff, hid_ratio: 1.0}
+        - {type: leff, hid_ratio: 0.5}
+        - {type: leff, hid_ratio: 0.5}
+
