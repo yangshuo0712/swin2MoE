@@ -9,7 +9,7 @@ from .utils import Mlp as MLP
 
 class LeFFExpert(nn.Module):
     """
-    Locally Enhanced Feed‑Forward expert.
+    Locally Enhanced Feed-Forward expert.
 
     This expert expands the token features into a higher dimensional space,
     applies a depthwise convolution along the sequence dimension to capture
@@ -96,70 +96,39 @@ class SparseDispatcher(object):
 
         The slice corresponding to a particular batch element b is computed as
         the sum over all experts i of the expert output, weighted by the
-        corresponding gate values.
-
-        This implementation performs the combination in a streaming manner to
-        avoid constructing giant intermediate tensors, which can lead to OOM.
+        corresponding gate values.  If `multiply_by_gates` is set to False,
+        the gate values are ignored.
 
         Args:
             expert_out: a list of `num_experts` tensors, each with shape
                 [expert_batch_size_i, output_size].
             multiply_by_gates: whether to weight the outputs by the gate values.
             cnn_combine: if provided, apply this 2‑D convolution to combine
-                outputs from multiple experts (Smart Merger).  NOTE: because the
-                streaming combine no longer retains per‑expert axes after summation,
-                use of cnn_combine is not supported in this implementation and
-                will be ignored to avoid excessive memory usage.
+                outputs from multiple experts (Smart Merger).
 
         Returns:
             a tensor with shape [batch_size, output_size].
         """
-        # fall back to simple weighted sum when smart merger requested
-        # to prevent building huge intermediate tensors
-        if cnn_combine is not None:
-            # We deliberately ignore the smart merger here to conserve memory.
-            # If smartly combining is desired, please disable with_smart_merger or
-            # implement a custom streaming variant outside of this class.
-            pass
-        # Determine device and output shape
-        device = None
-        dtype = None
-        out_shape = None
-        for out in expert_out:
-            if out is not None and out.numel() > 0:
-                device = out.device
-                dtype = out.dtype
-                out_shape = out.shape[1:]
-                break
-        if device is None:
-            # no experts had any data; return zeros
-            return torch.zeros((self._gates.size(0), 0), device=self._gates.device)
-        # Preallocate final combined tensor
-        combined = torch.zeros((self._gates.size(0),) + out_shape, device=device, dtype=dtype)
-        # Compute per‑expert gate weights if required
+        stitched = torch.cat(expert_out, 0)
         if multiply_by_gates:
-            expert_gates = torch.split(self._nonzero_gates, self._part_sizes, dim=0)
-        else:
-            expert_gates = [None] * self._num_experts
-        # Compute per‑expert batch indices
-        expert_batch_indices = self._batch_index.split(self._part_sizes, dim=0)
-        # Accumulate outputs per expert
-        for i in range(self._num_experts):
-            output_i = expert_out[i]
-            if output_i is None or output_i.numel() == 0:
-                continue
-            if multiply_by_gates and expert_gates[i] is not None:
-                # use broadcasting to apply gate weights per sample
-                output_i = output_i * expert_gates[i].unsqueeze(1)
-            combined.index_add_(0, expert_batch_indices[i], output_i)
+            stitched = stitched.mul(self._nonzero_gates.unsqueeze(1))
+        zeros = torch.zeros(
+            (self._gates.size(0),) + expert_out[-1].shape[1:],
+            device=stitched.device,
+            dtype=stitched.dtype,
+        )
+        if cnn_combine is not None:
+            return self.smartly_combine(stitched, cnn_combine)
+        combined = zeros.index_add(0, self._batch_index, stitched)
         return combined
 
     def smartly_combine(self, stitched, cnn_combine):
         """Apply a convolutional combine (Smart Merger) across active experts.
 
-        NOTE: This function retains its original behaviour for backwards
-        compatibility but can cause large memory allocations.  Consider using
-        the streaming combine above if memory is a concern.
+        This method groups the outputs belonging to the same sample and stacks
+        them along a new dimension to form a tensor of shape
+        (batch_size, num_active_experts, output_size).  The convolution is
+        applied across the num_active_experts dimension and outputs are merged.
         """
         idxes = []
         for i in self._batch_index.unique():
@@ -272,8 +241,6 @@ class MoE(nn.Module):
         self.cnn_combine = None
         if with_smart_merger == "v1":
             # convolution merges K expert outputs into one; K = self.k by default
-            # NOTE: Smart Merger can increase memory usage dramatically.  Consider
-            # leaving this unset or disabling it for large inputs.
             self.cnn_combine = nn.Conv2d(self.k, 1, kernel_size=3, padding=1)
         # dynamic routing parameters
         self.dynamic_route = dynamic_route
@@ -346,9 +313,8 @@ class MoE(nn.Module):
 
         # softmax over the selected logits
         top_k_gates = self.softmax(top_k_logits)
-        # Use scatter_add to accumulate probabilities in case of duplicate indices
-        gates = torch.zeros_like(logits, dtype=top_k_gates.dtype)
-        gates.scatter_add_(1, top_k_indices, top_k_gates)
+        zeros = torch.zeros_like(logits, dtype=top_k_gates.dtype)
+        gates = zeros.scatter(1, top_k_indices, top_k_gates)
 
         # compute load
         if self.noisy_gating and self.k < self.num_experts and train:
@@ -408,8 +374,6 @@ class MoE(nn.Module):
         dispatcher = SparseDispatcher(self.num_experts, repeat_gates)
 
         expert_inputs = dispatcher.dispatch(x_flat)
-        # compute per‑expert gating for weighting outputs
-        # This call remains useful for potential downstream uses
         gate_list = dispatcher.expert_to_gates()
         expert_outputs = []
         for i, expert in enumerate(self.experts):
@@ -423,7 +387,7 @@ class MoE(nn.Module):
                 )
                 continue
             expert_outputs.append(expert(expert_inputs[i]))
-        # combine outputs using streaming combine to reduce memory usage
+        # combine outputs
         y_flat = dispatcher.combine(
             expert_outputs, cnn_combine=self.cnn_combine
         )

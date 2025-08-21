@@ -6,10 +6,10 @@ super_res:
   model:
     mlp_ratio: 1
     MoE_config:
-      k: 2
+      k: 1
       num_experts: 8
       with_noise: false
-      with_smart_merger: v1
+      with_smart_merger: none
       x_gating: spatial
       dynamic_route: true
       conf_threshold: 0.5
