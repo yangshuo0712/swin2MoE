@@ -8,6 +8,8 @@ def build_model(cfg):
         from .network_swinir import SwinIR as SRModel
     elif version == 'v2':
         from .network_swin2sr import Swin2SR as SRModel
+    elif version == 'PS':
+        from .network_swin2srForPS import Swin2SR as SRModel
     elif version == 'swinfir':
         from .swinfir_arch import SwinFIR as SRModel
 
