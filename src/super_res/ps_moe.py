@@ -174,7 +174,7 @@ class SparseDispatcher(object):
 
             if multiply_by_gates and expert_gates[i] is not None:
                 # Use broadcasting to apply gate weights per sample
-                output_i = output_i * expert_gates[i].unsqueeze(1)
+                output_i = output_i * expert_gates[i]
             
             # Use index_add_ for memory-efficient, in-place addition
             combined.index_add_(0, expert_batch_indices[i], output_i.to(combined.dtype))
@@ -263,22 +263,38 @@ class MoE(nn.Module):
         return gates, load
 
     def forward(self, x, band_indices, loss_coef=1e-2):
-        # xg = x.mean(1)
+        # x: [N, C]
+        # band_indices: [N] 或 [N,1] 或 [N,K(one-hot)]
+        assert x.dim() == 2, f"x should be 2D [N,C], got {x.shape}"
+        assert band_indices.size(0) == x.size(0), \
+            f"band_indices first dim must match x: {band_indices.size(0)} vs {x.size(0)}"
+
+        # gating 仍然用原始 token 特征
         xg = x
         gates, load = self.noisy_top_k_gating(xg, self.training)
         importance = gates.sum(0)
-        loss = self.cv_squared(importance) + self.cv_squared(load)
-        loss *= loss_coef
+        loss = (self.cv_squared(importance) + self.cv_squared(load)) * loss_coef
 
-        # Augment x with band_indices
-        num_tokens = x.shape[0]
+        # 规范化 band_indices -> [N,1] 的单列整数索引
+        if band_indices.dim() == 1:
+            bi = band_indices.view(-1, 1)
+        elif band_indices.dim() == 2 and band_indices.size(1) == 1:
+            bi = band_indices
+        elif band_indices.dim() == 2:
+            # 传进来是 one-hot 或多列编码时，取 argmax 变成单列索引
+            bi = band_indices.argmax(dim=1, keepdim=True)
+        else:
+            raise ValueError(f"Unexpected band_indices shape: {band_indices.shape}")
 
-        expanded_band_indices = band_indices.unsqueeze(1).float().expand(num_tokens, -1)
+        # 与 x 拼接，形成 [N, C+1]；注意 dtype/device
+        bi = bi.to(device=x.device, dtype=x.dtype)
+        x_with_band_info = torch.cat([x, bi], dim=1)   # [N, C+1]
 
-        x_with_band_info = torch.cat([x, expanded_band_indices], dim=1)
-        
+        # 走 MoE
         dispatcher = SparseDispatcher(self.num_experts, gates)
-        expert_inputs = dispatcher.dispatch(x_with_band_info)
+        expert_inputs = dispatcher.dispatch(x_with_band_info)   # list of [n_i, C+1]
         expert_outputs = [self.experts[i](expert_inputs[i]) for i in range(self.num_experts)]
-        y = dispatcher.combine(expert_outputs)
-        return y.view(x.shape), loss
+        # 要保证每个 expert 输出是 [n_i, C]（你的 SharedExpertMLP 里应当切掉最后一列并据此分支）
+        y = dispatcher.combine(expert_outputs)  # [N, C]
+
+        return y.view_as(x), loss

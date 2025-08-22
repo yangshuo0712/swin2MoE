@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from timm.models.layers import DropPath, to_2tuple, trunc_normal_
+from timm.layers import DropPath, to_2tuple, trunc_normal_
 
 from .ps_moe import MoE
 from .utils import Mlp, window_partition, window_reverse
@@ -73,7 +73,7 @@ class WindowAttention(nn.Module):
                 -(self.window_size[1] - 1), self.window_size[1], dtype=torch.float32
             )
             relative_coords_table = (
-                torch.stack(torch.meshgrid([relative_coords_h, relative_coords_w]))
+                torch.stack(torch.meshgrid([relative_coords_h, relative_coords_w], indexing='ij'))
                 .permute(1, 2, 0)
                 .contiguous()
                 .unsqueeze(0)
@@ -96,7 +96,7 @@ class WindowAttention(nn.Module):
             # get pair-wise relative position index for each token inside the window
             coords_h = torch.arange(self.window_size[0])
             coords_w = torch.arange(self.window_size[1])
-            coords = torch.stack(torch.meshgrid([coords_h, coords_w]))  # 2, Wh, Ww
+            coords = torch.stack(torch.meshgrid([coords_h, coords_w], indexing='ij'))  # 2, Wh, Ww
             coords_flatten = torch.flatten(coords, 1)  # 2, Wh*Ww
             relative_coords = (
                 coords_flatten[:, :, None] - coords_flatten[:, None, :]
@@ -419,7 +419,7 @@ class SwinTransformerBlock(nn.Module):
         B, L, C = x.shape
 
         shortcut = x
-        x_norm = self.norm1(x)
+        x_norm = self.norm1(x)  # Apply norm1 to x directly
         x_norm = x_norm.view(B, H, W, C)
 
         # cyclic shift
@@ -451,7 +451,7 @@ class SwinTransformerBlock(nn.Module):
         x = shortcut + self.drop_path(attn_x)
 
         # FFN
-        
+
         shortcut2 = x
         x_ffn = self.norm2(x)
         loss_moe = None
