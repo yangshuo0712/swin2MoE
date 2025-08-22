@@ -207,7 +207,8 @@ class MoE(nn.Module):
         return gates, load
 
     def forward(self, x, band_indices, loss_coef=1e-2):
-        xg = x.mean(1)
+        # xg = x.mean(1)
+        xg = x
         gates, load = self.noisy_top_k_gating(xg, self.training)
         importance = gates.sum(0)
         loss = self.cv_squared(importance) + self.cv_squared(load)
