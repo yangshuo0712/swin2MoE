@@ -47,55 +47,62 @@ class LowRankAdapter(nn.Module):
         return self.lora_B(self.lora_A(x)) * self.scaling
 
 class SharedExpertMLP(nn.Module):
-    """
-    一个支持多波段参数共享的专家 MLP 模块。
-    所有波段共享一套基础 MLP权重,并为每个波段提供一个独立的低秩适配器。
-    """
     def __init__(self, in_features, hidden_features, out_features, num_bands, rank, alpha):
         super().__init__()
         self.in_features_actual = in_features - 1
         self.num_bands = num_bands
-        
-        # 1. 定义共享的MLP层
+
+        # 共享权重
         self.fc1 = nn.Linear(self.in_features_actual, hidden_features)
         self.act = nn.GELU()
         self.fc2 = nn.Linear(hidden_features, out_features)
 
-        # 2.为每个波段和每个MLP 层创建 LORA 适配器
-        self.lora_fc1_adapters = nn.ModuleList([
-            LowRankAdapter(self.in_features_actual, hidden_features, rank, alpha) for _ in range(num_bands)
-        ])
-        self.lora_fc2_adapters = nn.ModuleList([
-            LowRankAdapter(hidden_features, out_features, rank, alpha) for _ in range(num_bands)
-        ])
+        # 将LoRA适配器参数堆叠，以支持向量化操作
+        # lora_fc1
+        self.lora_fc1_A = nn.Parameter(torch.zeros(num_bands, self.in_features_actual, rank))
+        self.lora_fc1_B = nn.Parameter(torch.zeros(num_bands, rank, hidden_features))
+        # lora_fc2
+        self.lora_fc2_A = nn.Parameter(torch.zeros(num_bands, hidden_features, rank))
+        self.lora_fc2_B = nn.Parameter(torch.zeros(num_bands, rank, out_features))
+
+        self.scaling = alpha / rank
+        self.reset_adapter_parameters()
+
+    def reset_adapter_parameters(self):
+        for i in range(self.num_bands):
+            nn.init.kaiming_uniform_(self.lora_fc1_A[i], a=math.sqrt(5))
+            nn.init.zeros_(self.lora_fc1_B[i])
+            nn.init.kaiming_uniform_(self.lora_fc2_A[i], a=math.sqrt(5))
+            nn.init.zeros_(self.lora_fc2_B[i])
 
     def forward(self, x_with_band_info):
         # 分离特征和波段索引
         x = x_with_band_info[:, :-1]
         band_indices = x_with_band_info[:, -1].long()
+        
+        # --- 处理 fc1 ---
+        h_shared = self.fc1(x)
+        # 向量化LoRA计算
+        # 1. 根据band_indices为每个token收集对应的LoRA权重
+        lora_A1_for_tokens = self.lora_fc1_A[band_indices] # (num_tokens, in, rank)
+        lora_B1_for_tokens = self.lora_fc1_B[band_indices] # (num_tokens, rank, hidden)
+        # 2. 使用bmm进行批处理矩阵乘法
+        # x.unsqueeze(1) -> (num_tokens, 1, in)
+        # bmm -> (num_tokens, 1, rank) -> squeeze(1) -> (num_tokens, rank)
+        lora_h = torch.bmm(x.unsqueeze(1), lora_A1_for_tokens).squeeze(1)
+        lora_h = torch.bmm(lora_h.unsqueeze(1), lora_B1_for_tokens).squeeze(1)
+        
+        h = self.act(h_shared + lora_h * self.scaling)
 
-        output = torch.empty_like(x)
-        for band_idx in range(self.num_bands):
-            mask = (band_indices == band_idx)
-            if not mask.any():
-                continue
-            
-            tokens_for_band = x[mask]
-            
-            # ---处理 fc1 ---
-            h_shared = self.fc1(tokens_for_band)
-            h_lora = self.lora_fc1_adapters[band_idx](tokens_for_band)
-            h = h_shared + h_lora
-            h = self.act(h)
-            
-            # ---处理 fc2 ---
-            out_shared = self.fc2(h)
-            out_lora = self.lora_fc2_adapters[band_idx](h)
-            out_band = out_shared + out_lora
-            
-            output[mask] = out_band
-            
-        return output
+        # --- 处理 fc2 ---
+        out_shared = self.fc2(h)
+        # 向量化LoRA计算
+        lora_A2_for_tokens = self.lora_fc2_A[band_indices]
+        lora_B2_for_tokens = self.lora_fc2_B[band_indices]
+        lora_out = torch.bmm(h.unsqueeze(1), lora_A2_for_tokens).squeeze(1)
+        lora_out = torch.bmm(lora_out.unsqueeze(1), lora_B2_for_tokens).squeeze(1)
+
+        return out_shared + lora_out * self.scaling
 
 class SparseDispatcher(object):
     def __init__(self, num_experts, gates):

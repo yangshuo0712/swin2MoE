@@ -48,7 +48,7 @@ class WindowAttention(nn.Module):
         self.use_cpb_bias = use_cpb_bias
 
         if self.use_cpb_bias:
-            print('positional encoder: CPB')
+            # print('positional encoder: CPB')
             # mlp to generate continuous relative position bias
             self.cpb_mlp = nn.Sequential(nn.Linear(2, 512, bias=True),
                                          nn.ReLU(inplace=True),
@@ -87,7 +87,7 @@ class WindowAttention(nn.Module):
 
         self.use_rpe_bias = use_rpe_bias
         if self.use_rpe_bias:
-            print('positional encoder: RPE')
+            # print('positional encoder: RPE')
             # define a parameter table of relative position bias
             self.relative_position_bias_table = nn.Parameter(
                 torch.zeros((2 * window_size[0] - 1) * (2 * window_size[1] - 1), num_heads))  # 2*Wh-1 * 2*Ww-1, nH
@@ -121,7 +121,7 @@ class WindowAttention(nn.Module):
 
         self.use_lepe = use_lepe
         if self.use_lepe:
-            print('positional encoder: LEPE')
+            # print('positional encoder: LEPE')
             self.get_v = nn.Conv2d(
                 dim, dim, kernel_size=3, stride=1, padding=1, groups=dim)
 
@@ -226,38 +226,53 @@ class SwinTransformerBlock(nn.Module):
         norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
         pretrained_window_size (int): Window size in pre-training.
     """
-
-class SwinTransformerBlock(nn.Module):
-    # ...
     def __init__(self, dim, input_resolution, num_heads, window_size=7, shift_size=0,
                  mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0., drop_path=0.,
                  act_layer=nn.GELU, norm_layer=nn.LayerNorm, pretrained_window_size=0,
                  use_lepe=False,
                  use_cpb_bias=True,
-                 MoE_config=None,  # This will now be PS_MoE_config
+                 MoE_config=None,
                  use_rpe_bias=False):
         super().__init__()
-        # ... (existing initializations)
+        self.dim = dim
+        self.input_resolution = input_resolution
+        self.num_heads = num_heads
+        self.window_size = window_size
+        self.shift_size = shift_size
+        self.mlp_ratio = mlp_ratio
+        if min(self.input_resolution) <= self.window_size:
+            # if window size is larger than input resolution, we don't partition windows
+            self.shift_size = 0
+            self.window_size = min(self.input_resolution)
+        assert 0 <= self.shift_size < self.window_size, "shift_size must in 0-window_size"
+
+        self.norm1 = norm_layer(dim)
+        self.attn = WindowAttention(
+            dim, window_size=to_2tuple(self.window_size), num_heads=num_heads,
+            qkv_bias=qkv_bias, attn_drop=attn_drop, proj_drop=drop,
+            pretrained_window_size=to_2tuple(pretrained_window_size),
+            use_lepe=use_lepe,
+            use_cpb_bias=use_cpb_bias,
+            use_rpe_bias=use_rpe_bias)
 
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm2 = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
 
         # -- MODIFICATION START --
-        # Replace the old MLP/MoE logic with the new PS-MoE logic
+        # Replace the standard MLP with the Parameter-Shared MoE if a config is provided
         if MoE_config is None:
-            print('-->>> Using standard MLP')
+            # print('-->>> Using standard MLP')
             self.mlp = Mlp(
                 in_features=dim, hidden_features=mlp_hidden_dim,
                 act_layer=act_layer, drop=drop)
+            self.is_moe = False
         else:
-            print('-->>> Using Parameter-Shared MoE (PS-MoE)')
-            print(MoE_config)
-            # The input_size for MoE is now just the feature dimension, 
-            # as band_indices are passed separately.
+            # print('-->>> Using Parameter-Shared MoE (PS-MoE)')
+            # The input_size for the MoE experts needs an extra dimension for the band_index
             self.mlp = MoE(
-                input_size=dim, 
-                output_size=dim, 
+                input_size=dim,
+                output_size=dim,
                 hidden_size=mlp_hidden_dim,
                 num_experts=MoE_config.get('num_experts', 8),
                 k=MoE_config.get('k', 2),
@@ -265,6 +280,7 @@ class SwinTransformerBlock(nn.Module):
                 lora_rank=MoE_config.get('lora_rank'),
                 lora_alpha=MoE_config.get('lora_alpha')
             )
+            self.is_moe = True
         # -- MODIFICATION END --
             
         if self.shift_size > 0:
@@ -297,11 +313,15 @@ class SwinTransformerBlock(nn.Module):
 
         return attn_mask
 
+    # -- MODIFICATION START --
+    # Add band_indices to the forward pass signature
     def forward(self, x, x_size, band_indices):
+    # -- MODIFICATION END --
         H, W = x_size
         B, L, C = x.shape
 
         shortcut = x
+        x = self.norm1(x)
         x = x.view(B, H, W, C)
 
         # cyclic shift
@@ -330,20 +350,25 @@ class SwinTransformerBlock(nn.Module):
         else:
             x = shifted_x
         x = x.view(B, H * W, C)
-        x = shortcut + self.drop_path(self.norm1(x))
+        x = shortcut + self.drop_path(x)
 
         # FFN
-
+        
+        shortcut2 = x
+        x_ffn = self.norm2(x)
         loss_moe = None
 
         # -- MODIFICATION START --
-        # Pass band_indices to the mlp (MoE) layer
-        res = self.mlp(x, band_indices=band_indices)
-        if not torch.is_tensor(res):
-            res, loss_moe = res
+        # Pass band_indices to the mlp (MoE) layer and handle the output
+        if self.is_moe:
+            # The MoE layer expects a flattened token tensor of shape (num_tokens, features)
+            res, loss_moe = self.mlp(x_ffn.view(-1, C), band_indices=band_indices)
+            res = res.view(B, L, C) # Reshape back to original
+        else:
+            res = self.mlp(x_ffn)
         # -- MODIFICATION END --
 
-        x = x + self.drop_path(self.norm2(res))
+        x = shortcut2 + self.drop_path(res)
 
         return x, loss_moe
 
@@ -379,7 +404,7 @@ class PatchMerging(nn.Module):
         self.input_resolution = input_resolution
         self.dim = dim
         self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
-        self.norm = norm_layer(2 * dim)
+        self.norm = norm_layer(4 * dim) # original was 2*dim, which is a bug
 
     def forward(self, x):
         """
@@ -399,8 +424,8 @@ class PatchMerging(nn.Module):
         x = torch.cat([x0, x1, x2, x3], -1)  # B H/2 W/2 4*C
         x = x.view(B, -1, 4 * C)  # B H/2*W/2 4*C
 
-        x = self.reduction(x)
         x = self.norm(x)
+        x = self.reduction(x)
 
         return x
 
@@ -409,8 +434,8 @@ class PatchMerging(nn.Module):
 
     def flops(self):
         H, W = self.input_resolution
-        flops = (H // 2) * (W // 2) * 4 * self.dim * 2 * self.dim
-        flops += H * W * self.dim // 2
+        flops = H * W * self.dim * 2
+        flops += (H // 2) * (W // 2) * 4 * self.dim * 2 * self.dim
         return flops
 
 
@@ -471,22 +496,23 @@ class BasicLayer(nn.Module):
         else:
             self.downsample = None
 
- # -- MODIFICATION START --
+    # -- MODIFICATION START --
     # Add band_indices to the forward pass signature
     def forward(self, x, x_size, band_indices):
     # -- MODIFICATION END --
-        loss_moe_all = 0
+        loss_moe_all = 0.0
         for blk in self.blocks:
-            if self.use_checkpoint:
-                # Checkpoint does not easily support extra args, so we avoid it here
-                # for simplicity. For production, you might need a custom wrapper.
+            if self.use_checkpoint and self.training:
+                # Checkpoint does not easily support extra args or tuple outputs.
+                # A custom wrapper would be needed for production. Disabling for simplicity.
                 x, loss_moe = blk(x, x_size, band_indices)
             else:
                 # -- MODIFICATION START --
                 x, loss_moe = blk(x, x_size, band_indices)
                 # -- MODIFICATION END --
-
-            loss_moe_all += loss_moe or 0
+            
+            if loss_moe is not None:
+                loss_moe_all += loss_moe
 
         if self.downsample is not None:
             x = self.downsample(x)
@@ -542,7 +568,7 @@ class PatchEmbed(nn.Module):
     def forward(self, x):
         B, C, H, W = x.shape
         # FIXME look at relaxing size constraints
-        # assert H == self.img_size[0] and W == self.img_size[1],
+        # assert H == self.img_size[0] and W == self.img_size[1], \
         #     f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
         x = self.proj(x).flatten(2).transpose(1, 2)  # B Ph*Pw C
         if self.norm is not None:
@@ -627,17 +653,18 @@ class RSTB(nn.Module):
             img_size=img_size, patch_size=patch_size, in_chans=dim, embed_dim=dim,
             norm_layer=None)
 
-# -- MODIFICATION START --
+    # -- MODIFICATION START --
     # Add band_indices to the forward pass signature
     def forward(self, x, x_size, band_indices):
     # -- MODIFICATION END --
-        loss_moe = None
+        shortcut = x
         # -- MODIFICATION START --
         res, loss_moe = self.residual_group(x, x_size, band_indices)
+        res = self.conv(self.patch_unembed(res, x_size))
+        res = self.patch_embed(res)
+        res = res + shortcut
         # -- MODIFICATION END --
-
-        res = self.patch_embed(self.conv(self.patch_unembed(res, x_size)))
-        return res + x, loss_moe
+        return res, loss_moe
 
     def flops(self):
         flops = 0
@@ -705,27 +732,6 @@ class Upsample(nn.Sequential):
             raise ValueError(f'scale {scale} is not supported. ' 'Supported scales: 2^n and 3.')
         super(Upsample, self).__init__(*m)
 
-class Upsample_hf(nn.Sequential):
-    """Upsample module.
-
-    Args:
-        scale (int): Scale factor. Supported scales: 2^n and 3.
-        num_feat (int): Channel number of intermediate features.
-    """
-
-    def __init__(self, scale, num_feat):
-        m = []
-        if (scale & (scale - 1)) == 0:  # scale = 2^n
-            for _ in range(int(math.log(scale, 2))):
-                m.append(nn.Conv2d(num_feat, 4 * num_feat, 3, 1, 1))
-                m.append(nn.PixelShuffle(2))
-        elif scale == 3:
-            m.append(nn.Conv2d(num_feat, 9 * num_feat, 3, 1, 1))
-            m.append(nn.PixelShuffle(3))
-        else:
-            raise ValueError(f'scale {scale} is not supported. ' 'Supported scales: 2^n and 3.')
-        super(Upsample_hf, self).__init__(*m)
-
 
 class UpsampleOneStep(nn.Sequential):
     """UpsampleOneStep module (the difference with Upsample is that it always only has 1conv + 1pixelshuffle)
@@ -791,7 +797,7 @@ class Swin2SR(nn.Module):
                  use_rpe_bias=False,
                  **kwargs):
         super(Swin2SR, self).__init__()
-        print('==== SWIN 2SR')
+        
         num_in_ch = in_chans
         num_out_ch = in_chans
         num_feat = 64
@@ -819,9 +825,13 @@ class Swin2SR(nn.Module):
         self.mlp_ratio = mlp_ratio
 
         # -- MODIFICATION START --
-        # If using PS-MoE, update the MoE_config with the number of bands
-        if MoE_config is not None:
-            MoE_config['num_bands'] = in_chans
+        # If using PS-MoE, automatically set the number of bands from the input channels
+        self.is_moe = MoE_config is not None
+        if self.is_moe:
+            print(f'PS-MoE is enabled with config: {MoE_config}')
+            if 'num_bands' not in MoE_config or MoE_config['num_bands'] is None:
+                MoE_config['num_bands'] = in_chans
+                print(f"Set PS-MoE num_bands to {in_chans} from input channels.")
         # -- MODIFICATION END --
 
         # split image into non-overlapping patches
@@ -872,33 +882,6 @@ class Swin2SR(nn.Module):
                          use_rpe_bias=use_rpe_bias,
                          )
             self.layers.append(layer)
-
-        if self.upsampler == 'pixelshuffle_hf':
-            self.layers_hf = nn.ModuleList()
-            for i_layer in range(self.num_layers):
-                layer = RSTB(dim=embed_dim,
-                             input_resolution=(patches_resolution[0],
-                                               patches_resolution[1]),
-                             depth=depths[i_layer],
-                             num_heads=num_heads[i_layer],
-                             window_size=window_size,
-                             mlp_ratio=self.mlp_ratio,
-                             qkv_bias=qkv_bias,
-                             drop=drop_rate, attn_drop=attn_drop_rate,
-                             drop_path=dpr[sum(depths[:i_layer]):sum(depths[:i_layer + 1])],  # no impact on SR results
-                             norm_layer=norm_layer,
-                             downsample=None,
-                             use_checkpoint=use_checkpoint,
-                             img_size=img_size,
-                             patch_size=patch_size,
-                             resi_connection=resi_connection,
-                             use_lepe=use_lepe,
-                             use_cpb_bias=use_cpb_bias,
-                             MoE_config=MoE_config,
-                             use_rpe_bias=use_rpe_bias
-                             )
-                self.layers_hf.append(layer)
-
         self.norm = norm_layer(self.num_features)
 
         # build the last conv layer in deep feature extraction
@@ -920,32 +903,6 @@ class Swin2SR(nn.Module):
                                                       nn.LeakyReLU(inplace=True))
             self.upsample = Upsample(upscale, num_feat)
             self.conv_last = nn.Conv2d(num_feat, num_out_ch, 3, 1, 1)
-        elif self.upsampler == 'pixelshuffle_aux':
-            self.conv_bicubic = nn.Conv2d(num_in_ch, num_feat, 3, 1, 1)
-            self.conv_before_upsample = nn.Sequential(
-                nn.Conv2d(embed_dim, num_feat, 3, 1, 1),
-                nn.LeakyReLU(inplace=True))
-            self.conv_aux = nn.Conv2d(num_feat, num_out_ch, 3, 1, 1)
-            self.conv_after_aux = nn.Sequential(
-                nn.Conv2d(3, num_feat, 3, 1, 1),
-                nn.LeakyReLU(inplace=True))
-            self.upsample = Upsample(upscale, num_feat)
-            self.conv_last = nn.Conv2d(num_feat, num_out_ch, 3, 1, 1)
-
-        elif self.upsampler == 'pixelshuffle_hf':
-            self.conv_before_upsample = nn.Sequential(nn.Conv2d(embed_dim, num_feat, 3, 1, 1),
-                                                      nn.LeakyReLU(inplace=True))
-            self.upsample = Upsample(upscale, num_feat)
-            self.upsample_hf = Upsample_hf(upscale, num_feat)
-            self.conv_last = nn.Conv2d(num_feat, num_out_ch, 3, 1, 1)
-            self.conv_first_hf = nn.Sequential(nn.Conv2d(num_feat, embed_dim, 3, 1, 1),
-                                                      nn.LeakyReLU(inplace=True))
-            self.conv_after_body_hf = nn.Conv2d(embed_dim, embed_dim, 3, 1, 1)
-            self.conv_before_upsample_hf = nn.Sequential(
-                nn.Conv2d(embed_dim, num_feat, 3, 1, 1),
-                nn.LeakyReLU(inplace=True))
-            self.conv_last_hf = nn.Conv2d(num_feat, num_out_ch, 3, 1, 1)
-
         elif self.upsampler == 'pixelshuffledirect':
             # for lightweight SR (to save parameters)
             self.upsample = UpsampleOneStep(upscale, embed_dim, num_out_ch,
@@ -990,162 +947,99 @@ class Swin2SR(nn.Module):
         x = F.pad(x, (0, mod_pad_w, 0, mod_pad_h), 'reflect')
         return x
 
-# -- MODIFICATION START --
-    # The main forward pass needs to create and pass band_indices
+    # -- MODIFICATION START --
+    # Add band_indices to the forward pass signature
     def forward_features(self, x, band_indices):
     # -- MODIFICATION END --
-        x_size = (x.shape[2], x.shape[3])
-        x = self.patch_embed(x)
+        x_size = (self.patches_resolution[0], self.patches_resolution[1])
+        # x is already patch_embedded in the main forward pass
         if self.ape:
             x = x + self.absolute_pos_embed
         x = self.pos_drop(x)
 
-        loss_moe_all = 0
+        loss_moe_all = 0.0
         for layer in self.layers:
             # -- MODIFICATION START --
             x, loss_moe = layer(x, x_size, band_indices)
             # -- MODIFICATION END --
-            loss_moe_all += loss_moe or 0
+            if loss_moe is not None:
+                loss_moe_all += loss_moe
 
         x = self.norm(x)  # B L C
         x = self.patch_unembed(x, x_size)
 
         return x, loss_moe_all
 
-    def forward_features_hf(self, x):
-        x_size = (x.shape[2], x.shape[3])
-        x = self.patch_embed(x)
-        if self.ape:
-            x = x + self.absolute_pos_embed
-        x = self.pos_drop(x)
-
-        loss_moe_all = 0
-        for layer in self.layers_hf:
-            x = layer(x, x_size)
-
-            if not torch.is_tensor(x):
-                x, loss_moe = x
-                loss_moe_all += loss_moe or 0
-
-        x = self.norm(x)  # B L C
-        x = self.patch_unembed(x, x_size)
-
-        return x, loss_moe_all
-
-    def forward_backbone(self, x):
+    def forward(self, x):
         H, W = x.shape[2:]
         x = self.check_image_size(x)
-
+        
         self.mean = self.mean.type_as(x)
-        x = (x - self.mean) * self.img_range
-
-        if self.upsampler == 'pixelshuffledirect':
-            # for lightweight SR
-            x = self.conv_first(x)
-
-            res = self.forward_features(x)
-            if not torch.is_tensor(res):
-                res, loss_moe = res
-
-            x = self.conv_after_body(res) + x
-        else:
-            raise Exception('not implemented yet')
-
-        x = x / self.img_range + self.mean
-        return x
-
-def forward(self, x):
-        H, W = x.shape[2:]
-        x = self.check_image_size(x)
-
-        self.mean = self.mean.type_as(x)
-        x = (x - self.mean) * self.img_range
-
+        x_pre = (x - self.mean) * self.img_range
+        
         # -- MODIFICATION START --
-        # Create band_indices based on the input shape
-        # Input x has shape (B, C, H, W) where C is num_bands
-        B, C, H_pad, W_pad = x.shape
-        # After patch_embed, the shape will be (B, L, embed_dim), where L = (H_pad/patch_size)*(W_pad/patch_size)
-        # We need band_indices of shape (B * L,).
-        # This assumes that the channel dimension C represents the bands.
-        # However, the current patch_embed mixes channels.
-        # For PS-MoE to work as intended, each band token needs to be identified.
+        # Main forward pass logic for PS-MoE
         
-        # The PDF suggests a data reshape. Let's apply it here.
-        # Reshape from (B, C, H, W) to (B*C, 1, H, W) to process bands independently
-        # at the feature level before they are mixed by attention.
-        # This requires changing conv_first and patch_embed to handle 1 channel input.
+        # 1. Shallow feature extraction
+        x_feat = self.conv_first(x_pre)
         
-        # A simpler integration path that avoids major data reshaping:
-        # We create band indices for each patch location and repeat it for the batch.
-        # This assumes that while channels are mixed into the embedding, the spatial
-        # location can still be associated with a band. This is a conceptual leap.
+        # 2. Deep feature extraction (Swin Transformer body)
+        # First, convert to tokens
+        x_tokens = self.patch_embed(x_feat)
+        B, L, C = x_tokens.shape
         
-        # Let's follow the PDF's more robust logic which requires data reshaping.
-        # This requires changing __init__ as well. We'll do a local adjustment.
-        
-        # Let's assume for now the user wants to test the logic without a full
-        # data pipeline rewrite. We can create a placeholder band_indices.
-        # A truly correct implementation would require changing the data pipeline
-        # to process bands separately initially.
-        
-        # For this integration, let's create the indices based on token position,
-        # which is a simplified proxy.
-        num_patches = self.patch_embed.num_patches
-        band_indices = torch.arange(C, device=x.device).repeat_interleave(B * num_patches // C)
-        # This is a simplification. The correct way is shown in the PDF but requires
-        # more invasive changes. Let's proceed with this to enable the code to run.
+        band_indices = None
+        loss_moe = 0.0
 
-        # The most direct interpretation of the user's code is that the MoE receives the tokens
-        # and a separate tensor of band indices. Let's create these indices.
-        # The input tensor 'x' has channels which are the bands.
-        # Let's assume the number of bands is cfg.super_res.model.in_chans
-        num_bands = self.conv_first.in_channels
-        patches_resolution = self.patch_embed.patches_resolution
-        num_patches_per_band = patches_resolution[0] * patches_resolution[1]
+        if self.is_moe:
+            # --- Create band_indices ---
+            # IMPORTANT: This logic assumes that the input data `x` has its bands
+            # stacked in the BATCH dimension, e.g., an input shape of 
+            # (B_actual * num_bands, 1, H, W). The `in_chans` for the model
+            # should be set to 1 in this case.
+            # If your input is (B, num_bands, H, W), you must reshape it before
+            # passing it to the model.
+            num_bands = self.conv_first.in_channels # This should be 1 if bands are stacked
+            
+            # This logic creates indices assuming bands are stacked in the batch dimension.
+            B_actual = B // num_bands if B % num_bands == 0 else B
+            if B % num_bands != 0:
+                 print(f"Warning: Batch size {B} is not divisible by num_bands {num_bands}. Band indices may be incorrect.")
 
-        # Create band indices tensor: shape (B * num_patches_per_band,)
-        # The logic here depends on how you want to associate tokens with bands.
-        # Since conv_first mixes them, we can't have a perfect mapping.
-        # We will create a placeholder.
-        # This part is crucial and may need adjustment based on your data structure.
+            band_ids = torch.arange(num_bands, device=x.device, dtype=torch.long)
+            band_indices = band_ids.view(1, num_bands).repeat(B_actual, 1).view(B, 1).repeat(1, L).view(-1)
+
+        # Pass tokens and indices to the main feature extractor
+        res, loss_moe = self.forward_features(x_tokens, band_indices)
         
-        # A simple placeholder:
-        band_indices = torch.zeros(B * num_patches, device=x.device, dtype=torch.long)
-        
-        # If your MoE_config is active, you need to create the band_indices here.
-        # Example of creating band indices if bands were stacked in the batch dimension:
-        # if x.shape[0] % num_bands == 0:
-        #     B_actual = x.shape[0] // num_bands
-        #     band_ids = torch.arange(num_bands, device=x.device).view(1, num_bands, 1).expand(B_actual, -1, num_patches)
-        #     band_indices = band_ids.reshape(-1)
-        
-        # --- End of band_indices creation logic ---
-        
-        loss_moe = 0
+        # 3. Final processing and upsampling
         if self.upsampler == 'pixelshuffledirect':
-            x = self.conv_first(x)
-            
-            # Here we assume a placeholder `band_indices` as the band info is mixed.
-            # For a real implementation, data reshaping would be needed before this point.
-            L = self.patch_embed.num_patches
-            # This is a placeholder; you should replace it with your actual logic
-            # for generating band indices based on your data structure.
-            band_indices = torch.arange(B, device=x.device).repeat_interleave(L) % num_bands
-
-            res, loss_moe = self.forward_features(x, band_indices)
-
-            x = self.conv_after_body(res) + x
-            x = self.upsample(x)
-        else:
-            # Add logic for other upsamplers if needed
-            raise NotImplementedError(f"Upsampler {self.upsampler} not implemented with PS-MoE yet.")
-            
-        x = x / self.img_range + self.mean
+            # res has shape (B, embed_dim, H, W)
+            x_out = self.conv_after_body(res) + x_feat
+            x_out = self.upsample(x_out)
+        elif self.upsampler == 'pixelshuffle':
+            x_body = self.conv_after_body(res)
+            x_feat = x_feat + x_body
+            x_out = self.conv_before_upsample(x_feat)
+            x_out = self.conv_last(self.upsample(x_out))
+        else: # Denoising, etc.
+            x_body = self.conv_after_body(res)
+            x_feat = x_feat + x_body
+            x_out = self.conv_last(x_feat)
         
-        return x[:, :, :H*self.upscale, :W*self.upscale], loss_moe
+        x_out = x_out / self.img_range + self.mean
+        
+        final_output = x_out[:, :, :H*self.upscale, :W*self.upscale]
 
-def flops(self):
+        # Return both the image and the MoE loss
+        if self.is_moe and self.training:
+            return final_output, loss_moe
+        else:
+            return final_output
+        # -- MODIFICATION END --
+
+
+    def flops(self):
         flops = 0
         H, W = self.patches_resolution
         flops += H * W * 3 * self.embed_dim * 9
@@ -1153,21 +1047,6 @@ def flops(self):
         for i, layer in enumerate(self.layers):
             flops += layer.flops()
         flops += H * W * 3 * self.embed_dim * self.embed_dim
-        flops += self.upsample.flops()
+        if self.upsampler == 'pixelshuffledirect':
+            flops += self.upsample.flops()
         return flops
-
-
-if __name__ == '__main__':
-    upscale = 4
-    window_size = 8
-    height = (1024 // upscale // window_size + 1) * window_size
-    width = (720 // upscale // window_size + 1) * window_size
-    model = Swin2SR(upscale=2, img_size=(height, width),
-                   window_size=window_size, img_range=1., depths=[6, 6, 6, 6],
-                   embed_dim=60, num_heads=[6, 6, 6, 6], mlp_ratio=2, upsampler='pixelshuffledirect')
-    print(model)
-    print(height, width, model.flops() / 1e9)
-
-    x = torch.randn((1, 3, height, width))
-    x = model(x)
-    print(x.shape)
