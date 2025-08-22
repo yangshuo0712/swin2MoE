@@ -215,7 +215,11 @@ class MoE(nn.Module):
         loss *= loss_coef
 
         # Augment x with band_indices
-        x_with_band_info = torch.cat([x, band_indices.unsqueeze(1).float()], dim=1)
+        num_tokens = x.shape[0]
+
+        expanded_band_indices = band_indices.unsqueeze(1).float().expand(num_tokens, -1)
+
+        x_with_band_info = torch.cat([x, expanded_band_indices], dim=1)
         
         dispatcher = SparseDispatcher(self.num_experts, gates)
         expert_inputs = dispatcher.dispatch(x_with_band_info)

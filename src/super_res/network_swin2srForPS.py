@@ -1155,8 +1155,9 @@ class Swin2SR(nn.Module):
     # -- MODIFICATION START --
     # Add band_indices to the forward pass signature
     def forward_features(self, x, band_indices):
-        # -- MODIFICATION END --
-        x_size = (self.patches_resolution[0], self.patches_resolution[1])
+        B, L, C = x.shape
+        H = W = int(math.sqrt(L))
+        x_size = (H, W)
         # x is already patch_embedded in the main forward pass
         if self.ape:
             x = x + self.absolute_pos_embed
