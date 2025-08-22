@@ -76,33 +76,48 @@ class SharedExpertMLP(nn.Module):
             nn.init.zeros_(self.lora_fc2_B[i])
 
     def forward(self, x_with_band_info):
-        # 分离特征和波段索引
+        # 1. Separate features and band indices
         x = x_with_band_info[:, :-1]
         band_indices = x_with_band_info[:, -1].long()
         
-        # --- 处理 fc1 ---
-        h_shared = self.fc1(x)
-        # 向量化LoRA计算
-        # 1. 根据band_indices为每个token收集对应的LoRA权重
-        lora_A1_for_tokens = self.lora_fc1_A[band_indices] # (num_tokens, in, rank)
-        lora_B1_for_tokens = self.lora_fc1_B[band_indices] # (num_tokens, rank, hidden)
-        # 2. 使用bmm进行批处理矩阵乘法
-        # x.unsqueeze(1) -> (num_tokens, 1, in)
-        # bmm -> (num_tokens, 1, rank) -> squeeze(1) -> (num_tokens, rank)
-        lora_h = torch.bmm(x.unsqueeze(1), lora_A1_for_tokens).squeeze(1)
-        lora_h = torch.bmm(lora_h.unsqueeze(1), lora_B1_for_tokens).squeeze(1)
-        
-        h = self.act(h_shared + lora_h * self.scaling)
+        # 2. Create an empty tensor to store the results
+        output = torch.empty_like(x)
 
-        # --- 处理 fc2 ---
-        out_shared = self.fc2(h)
-        # 向量化LoRA计算
-        lora_A2_for_tokens = self.lora_fc2_A[band_indices]
-        lora_B2_for_tokens = self.lora_fc2_B[band_indices]
-        lora_out = torch.bmm(h.unsqueeze(1), lora_A2_for_tokens).squeeze(1)
-        lora_out = torch.bmm(lora_out.unsqueeze(1), lora_B2_for_tokens).squeeze(1)
+        # 3. Loop over each unique band present in this batch of tokens
+        for band_idx in torch.unique(band_indices):
+            # Create a boolean mask to select tokens for the current band
+            mask = (band_indices == band_idx)
+            
+            # Skip if no tokens for this band
+            if not mask.any():
+                continue
+            
+            tokens_for_band = x[mask]
 
-        return out_shared + lora_out * self.scaling
+            # --- FC1 Layer ---
+            # Shared part
+            h_shared = self.fc1(tokens_for_band)
+            # LoRA part (using standard matrix multiplication)
+            lora_A1 = self.lora_fc1_A[band_idx] # Shape: (in, rank)
+            lora_B1 = self.lora_fc1_B[band_idx] # Shape: (rank, hidden)
+            h_lora = (tokens_for_band @ lora_A1 @ lora_B1) * self.scaling
+            
+            h = self.act(h_shared + h_lora)
+
+            # --- FC2 Layer ---
+            # Shared part
+            out_shared = self.fc2(h)
+            # LoRA part
+            lora_A2 = self.lora_fc2_A[band_idx] # Shape: (hidden, rank)
+            lora_B2 = self.lora_fc2_B[band_idx] # Shape: (rank, out)
+            out_lora = (h @ lora_A2 @ lora_B2) * self.scaling
+            
+            out_band = out_shared + out_lora
+            
+            # 4. Place the computed results back into the correct positions in the output tensor
+            output[mask] = out_band.to(output.dtype)
+            
+        return output
 
 class SparseDispatcher(object):
     def __init__(self, num_experts, gates):
@@ -120,9 +135,50 @@ class SparseDispatcher(object):
         return torch.split(inp_exp, self._part_sizes, dim=0)
 
     def combine(self, expert_out, multiply_by_gates=True):
-        stitched = torch.cat(expert_out, 0).mul(self._nonzero_gates.unsqueeze(1))
-        zeros = torch.zeros((self._gates.size(0), expert_out[-1].size(1)), requires_grad=True, device=stitched.device)
-        combined = zeros.index_add(0, self._batch_index, stitched.float())
+        """
+        Sum together the expert output, weighted by the gates, in a memory-efficient manner.
+        """
+        # expert_out is a list of tensors, let's find the device and dtype from the first valid one.
+        device = None
+        dtype = None
+        out_shape = None
+        for out in expert_out:
+            if out is not None and out.numel() > 0:
+                device = out.device
+                dtype = out.dtype
+                out_shape = out.shape[1:]
+                break
+        
+        # If all experts returned empty tensors, return zeros.
+        if device is None:
+            # You might need to adjust the output shape based on what the model expects downstream.
+            # Here we assume the output size is known from the MoE layer.
+            # This is a fallback; in practice, at least one expert should have output.
+            output_size = self._gates.size(1) # This is a placeholder, might need adjustment
+            return torch.zeros((self._gates.size(0), output_size), device=self._gates.device)
+
+        # Pre-allocate the final combined tensor with zeros.
+        combined = torch.zeros((self._gates.size(0),) + out_shape, device=device, dtype=dtype)
+
+        # Get the gate values for each expert's outputs
+        expert_gates = torch.split(self._nonzero_gates, self._part_sizes, dim=0)
+        
+        # Get the original batch indices for each expert's outputs
+        expert_batch_indices = self._batch_index.split(self._part_sizes, dim=0)
+
+        # Add each expert's output to the combined tensor at the correct indices.
+        for i in range(self._num_experts):
+            output_i = expert_out[i]
+            if output_i is None or output_i.numel() == 0:
+                continue
+
+            if multiply_by_gates and expert_gates[i] is not None:
+                # Use broadcasting to apply gate weights per sample
+                output_i = output_i * expert_gates[i].unsqueeze(1)
+            
+            # Use index_add_ for memory-efficient, in-place addition
+            combined.index_add_(0, expert_batch_indices[i], output_i.to(combined.dtype))
+            
         return combined
 
     def expert_to_gates(self):

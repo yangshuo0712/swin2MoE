@@ -1190,20 +1190,21 @@ class Swin2SR(nn.Module):
         x_feat = self.conv_first(x_pre)
 
         # 2. Deep feature extraction (Swin Transformer body)
-        # First, convert to tokens
+        # ... inside the forward method, after x_tokens is created ...
         x_tokens = self.patch_embed(x_feat)
-        B, L, C = x_tokens.shape
+        B, L, C = x_tokens.shape # B=batch_size, L=num_patches, C=embed_dim
 
-        band_indices = None
         loss_moe = 0.0
+        band_indices = None # Initialize band_indices
 
         if self.is_moe:
-            # --- Create band_indices ---
             num_bands = self.conv_first.in_channels
-            if B < num_bands:
-                print(f"Warning: Batch size {B} is less than num_bands {num_bands}. This might lead to suboptimal learning for some bands.")
+            num_patches_per_band_item = L // num_bands
 
-            band_indices = torch.arange(B, device=x.device, dtype=torch.long) % num_bands
+            single_band_indices = torch.arange(num_bands, device=x.device, dtype=torch.long)
+            single_band_indices = single_band_indices.repeat_interleave(num_patches_per_band_item) # Shape: (L,)
+
+            band_indices = single_band_indices.repeat(B) # Shape: (B*L,)
 
         # Pass tokens and indices to the main feature extractor
         res, loss_moe = self.forward_features(x_tokens, band_indices)
