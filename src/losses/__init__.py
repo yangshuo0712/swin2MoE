@@ -1,4 +1,5 @@
 from torch import nn
+from utils import is_main_process
 
 from . import metrics_loss
 
@@ -13,5 +14,6 @@ def build_losses(cfg):
         losses['cc_criterion'] = metrics_loss.cc_loss
     if cfg.losses.get('with_ssim_criterion', False):
         losses['ssim_criterion'] = metrics_loss.ssim_loss(cfg)
-    print(losses)
+    if is_main_process():
+        print(losses)
     return losses

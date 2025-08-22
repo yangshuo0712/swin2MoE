@@ -57,7 +57,8 @@ def load_state_dict_model(model, optimizer, checkpoint) -> Tuple[int, int]:
     Load both model & optimizer state. Returns (next_epoch, index).
     Handles possible 'module.' prefixes automatically.
     """
-    print('load model state')
+    if is_main_process():
+        print('load model state')
     state_dict = checkpoint['model_state_dict']
     # Try direct load first
     try:
@@ -66,7 +67,8 @@ def load_state_dict_model(model, optimizer, checkpoint) -> Tuple[int, int]:
         # Strip prefix and try again
         model.load_state_dict(strip_module_prefix(state_dict))
 
-    print('load optimizer state')
+    if is_main_process():
+        print('load optimizer state')
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
     return checkpoint['epoch'] + 1, checkpoint['index']
@@ -75,7 +77,8 @@ def load_state_dict_model_only(model, checkpoint) -> Tuple[int, int]:
     """
     Load only the model weights. Returns (next_epoch, index).
     """
-    print('load model state')
+    if is_main_process():
+        print('load model state')
     state_dict = checkpoint['model_state_dict']
     try:
         model.load_state_dict(state_dict)

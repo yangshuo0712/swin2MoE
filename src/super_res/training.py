@@ -142,6 +142,7 @@ def train_epoch(model, train_dloader, losses, optimizer, epoch, writer,
                 if torch.is_tensor(loss_moe):
                     loss_tracker['loss_moe'] = loss_moe * weights.moe
 
+            #NOTE
             sr = sr.contiguous()
 
             if 'pixel_criterion' in losses:

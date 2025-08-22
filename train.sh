@@ -26,8 +26,8 @@ torchrun \
   src/main.py \
     --config cfg_n/sen2venus_exp6_2x_v2.yml \
     --phase train \
-    --batch_size 2 \
-    --num_workers 4 \
+    --batch_size 1 \
+    --num_workers 16 \
     --distributed true \
     --AMP true \
     --output ./output/2x_DDP_v6

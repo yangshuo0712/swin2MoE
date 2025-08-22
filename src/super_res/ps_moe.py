@@ -2,47 +2,41 @@ import torch
 import torch.nn as nn
 import math
 from torch.distributions.normal import Normal
-from copy import deepcopy
-import numpy as np
-
-from .utils import Mlp as MLP
 
 class LowRankAdapter(nn.Module):
     """
-    实现低秩适配 (LoRA) 的模块。
-    将一个大的权重更新矩阵 AW 分解为两个小的矩阵 B@A。
+    the lora module
     """
     def __init__(self, in_features, out_features, rank, alpha=8.0):
         """
-        初始化 LoRA 模块。
-        参数:
-        in_features (int): 输入特征维度。
-        out_features (int): 输出特征维度。
-        rank (int): 低秩分解的秩。
-        alpha (float): 适配器的缩放因子。
+        Parameter:
+        in_features (int)
+        out_features (int)
+        rank (int): rank of lora 
+        alpha (float) scaling factor of adapter
         """
         super().__init__()
         self.rank = rank
         self.alpha = alpha
-        # LoRA 分解的两个线性层
+
         self.lora_A = nn.Linear(in_features, rank, bias=False)
         self.lora_B = nn.Linear(rank, out_features, bias=False)
-        # 缩放因子,用于控制适配器对原始权重的影响
+
         self.scaling = self.alpha / self.rank
         self.reset_parameters()
 
     def reset_parameters(self):
         """
-        初始化权重。
-        - lora_A 使用 Kaiming Uniform 初始化,这是一种标准做法。
-        - lora_B 初始化为零,确保在训练开始时,AW为零矩阵。
+        init weight
+        - lora_A using Kaiming Uniform init
+        - lora_B init to 0
         """
         nn.init.kaiming_uniform_(self.lora_A.weight, a=math.sqrt(5))
         nn.init.zeros_(self.lora_B.weight)
 
     def forward(self, x):
         """
-        前向传播,计算 W@x。
+        calculate w@x
         """
         return self.lora_B(self.lora_A(x)) * self.scaling
 
@@ -52,12 +46,11 @@ class SharedExpertMLP(nn.Module):
         self.in_features_actual = in_features - 1
         self.num_bands = num_bands
 
-        # 共享权重
+        # sharing weights
         self.fc1 = nn.Linear(self.in_features_actual, hidden_features)
         self.act = nn.GELU()
         self.fc2 = nn.Linear(hidden_features, out_features)
 
-        # 将LoRA适配器参数堆叠，以支持向量化操作
         # lora_fc1
         self.lora_fc1_A = nn.Parameter(torch.zeros(num_bands, self.in_features_actual, rank))
         self.lora_fc1_B = nn.Parameter(torch.zeros(num_bands, rank, hidden_features))
@@ -264,37 +257,32 @@ class MoE(nn.Module):
 
     def forward(self, x, band_indices, loss_coef=1e-2):
         # x: [N, C]
-        # band_indices: [N] 或 [N,1] 或 [N,K(one-hot)]
+        # band_indices: [N] or [N,1] or [N,K(one-hot)]
         assert x.dim() == 2, f"x should be 2D [N,C], got {x.shape}"
         assert band_indices.size(0) == x.size(0), \
             f"band_indices first dim must match x: {band_indices.size(0)} vs {x.size(0)}"
 
-        # gating 仍然用原始 token 特征
         xg = x
         gates, load = self.noisy_top_k_gating(xg, self.training)
         importance = gates.sum(0)
         loss = (self.cv_squared(importance) + self.cv_squared(load)) * loss_coef
 
-        # 规范化 band_indices -> [N,1] 的单列整数索引
+        # band_indices -> [N,1] 
         if band_indices.dim() == 1:
             bi = band_indices.view(-1, 1)
         elif band_indices.dim() == 2 and band_indices.size(1) == 1:
             bi = band_indices
         elif band_indices.dim() == 2:
-            # 传进来是 one-hot 或多列编码时，取 argmax 变成单列索引
             bi = band_indices.argmax(dim=1, keepdim=True)
         else:
             raise ValueError(f"Unexpected band_indices shape: {band_indices.shape}")
 
-        # 与 x 拼接，形成 [N, C+1]；注意 dtype/device
         bi = bi.to(device=x.device, dtype=x.dtype)
         x_with_band_info = torch.cat([x, bi], dim=1)   # [N, C+1]
 
-        # 走 MoE
         dispatcher = SparseDispatcher(self.num_experts, gates)
         expert_inputs = dispatcher.dispatch(x_with_band_info)   # list of [n_i, C+1]
         expert_outputs = [self.experts[i](expert_inputs[i]) for i in range(self.num_experts)]
-        # 要保证每个 expert 输出是 [n_i, C]（你的 SharedExpertMLP 里应当切掉最后一列并据此分支）
         y = dispatcher.combine(expert_outputs)  # [N, C]
 
         return y.view_as(x), loss
