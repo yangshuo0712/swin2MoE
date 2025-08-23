@@ -3,6 +3,7 @@ import importlib
 import numpy as np
 import random
 import torch.distributed as dist
+import os
 
 from enum import Enum
 from torchmetrics.classification import MulticlassF1Score
@@ -11,8 +12,13 @@ from torchmetrics.classification import MulticlassF1Score
 def is_dist_avail_and_initialized():
     return dist.is_available() and dist.is_initialized()
 
+# def is_main_process():
+#     return (not is_dist_avail_and_initialized()) or dist.get_rank() == 0
+
 def is_main_process():
-    return (not is_dist_avail_and_initialized()) or dist.get_rank() == 0
+    if not is_dist_avail_and_initialized():
+        return os.environ.get("RANK") == "0"
+    return dist.get_rank() == 0
 
 def set_deterministic(seed):
     torch.manual_seed(seed)

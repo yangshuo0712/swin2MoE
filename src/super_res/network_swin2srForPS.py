@@ -12,7 +12,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 from timm.layers import DropPath, to_2tuple, trunc_normal_
+from utils import is_main_process
 
 from .ps_moe import MoE
 from .utils import Mlp, window_partition, window_reverse
@@ -625,7 +627,7 @@ class BasicLayer(nn.Module):
             if self.use_checkpoint and self.training:
                 # Checkpoint does not easily support extra args or tuple outputs.
                 # A custom wrapper would be needed for production. Disabling for simplicity.
-                x, loss_moe = blk(x, x_size, band_indices)
+                x, loss_moe = checkpoint(blk, x, x_size, band_indices, use_reentrant=False)
             else:
                 # -- MODIFICATION START --
                 x, loss_moe = blk(x, x_size, band_indices)
@@ -1010,10 +1012,11 @@ class Swin2SR(nn.Module):
         # If using PS-MoE, automatically set the number of bands from the input channels
         self.is_moe = MoE_config is not None
         if self.is_moe:
-            print(f"PS-MoE is enabled with config: {MoE_config}")
-            if "num_bands" not in MoE_config or MoE_config["num_bands"] is None:
-                MoE_config["num_bands"] = in_chans
-                print(f"Set PS-MoE num_bands to {in_chans} from input channels.")
+            if is_main_process():
+                print(f"PS-MoE is enabled with config: {MoE_config}")
+                if "num_bands" not in MoE_config or MoE_config["num_bands"] is None:
+                    MoE_config["num_bands"] = in_chans
+                    print(f"Set PS-MoE num_bands to {in_chans} from input channels.")
         # -- MODIFICATION END --
 
         # split image into non-overlapping patches

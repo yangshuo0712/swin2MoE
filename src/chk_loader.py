@@ -1,9 +1,12 @@
 import os
-import torch
+from typing import Any, Dict, Tuple
+
 import numpy as np
+import torch
 import torch.distributed as dist
-from utils import is_main_process, is_dist_avail_and_initialized
-from typing import Tuple, Dict, Any
+
+from utils import is_dist_avail_and_initialized, is_main_process
+from collections import OrderedDict
 # import pdb
 
 def unwrap_model(model):
@@ -52,6 +55,27 @@ def load_checkpoint(cfg) -> Dict[str, Any]:
 #
 #     return checkpoint['epoch'] + 1, checkpoint['index']
 
+# def load_state_dict_model(model, optimizer, checkpoint) -> Tuple[int, int]:
+#     """
+#     Load both model & optimizer state. Returns (next_epoch, index).
+#     Handles possible 'module.' prefixes automatically.
+#     """
+#     if is_main_process():
+#         print('load model state')
+#     state_dict = checkpoint['model_state_dict']
+#     # Try direct load first
+#     try:
+#         model.load_state_dict(state_dict)
+#     except RuntimeError:
+#         # Strip prefix and try again
+#         model.load_state_dict(strip_module_prefix(state_dict))
+#
+#     if is_main_process():
+#         print('load optimizer state')
+#     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+#
+#     return checkpoint['epoch'] + 1, checkpoint['index']
+
 def load_state_dict_model(model, optimizer, checkpoint) -> Tuple[int, int]:
     """
     Load both model & optimizer state. Returns (next_epoch, index).
@@ -59,13 +83,28 @@ def load_state_dict_model(model, optimizer, checkpoint) -> Tuple[int, int]:
     """
     if is_main_process():
         print('load model state')
+    
     state_dict = checkpoint['model_state_dict']
-    # Try direct load first
-    try:
-        model.load_state_dict(state_dict)
-    except RuntimeError:
-        # Strip prefix and try again
-        model.load_state_dict(strip_module_prefix(state_dict))
+    
+    # Check if the current model is a DDP model
+    is_ddp_model = isinstance(model, (torch.nn.DataParallel, torch.nn.parallel.DistributedDataParallel))
+    
+    # Check if the checkpoint was saved from a DDP model
+    is_ddp_checkpoint = all(k.startswith('module.') for k in state_dict.keys())
+
+    if is_ddp_model and not is_ddp_checkpoint:
+        # If loading a non-DDP checkpoint into a DDP model, add the "module." prefix
+        new_state_dict = OrderedDict()
+        for k, v in state_dict.items():
+            name = 'module.' + k
+            new_state_dict[name] = v
+        state_dict = new_state_dict
+    elif not is_ddp_model and is_ddp_checkpoint:
+        # If loading a DDP checkpoint into a non-DDP model, strip the "module." prefix
+        state_dict = {k[len('module.'):]: v for k, v in state_dict.items()}
+    
+    # Now load the state dict
+    model.load_state_dict(state_dict)
 
     if is_main_process():
         print('load optimizer state')
@@ -122,7 +161,7 @@ def save_state_dict_model(model, optimizer, epoch, index, cfg):
     # Optionally sync to be safe when others continue after save
     # ---------- Sync BEFORE saving ----------
     if is_dist_avail_and_initialized():
-        dist.barrier()
+        dist.barrier(device_ids=[cfg.local_rank])
 
     if is_main_process():
         dir_chk = os.path.join(cfg.output, 'checkpoints')
@@ -140,4 +179,4 @@ def save_state_dict_model(model, optimizer, epoch, index, cfg):
 
     # ---------- Sync AFTER saving ----------
     if is_dist_avail_and_initialized():
-        dist.barrier()
+        dist.barrier(device_ids=[cfg.local_rank])

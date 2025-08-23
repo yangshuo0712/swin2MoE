@@ -1,4 +1,4 @@
-__base__: sen2venus_exp6_v5.yml
+__base__: sen2venus_exp2_v5.yml
 
 dataset:
   root_path: data/sen2venus
@@ -33,6 +33,7 @@ losses:
 super_res:
   version: 'PS'
   model:
+    mlp_ratio: 1
     upscale: 2
     MoE_config:
       num_experts: 8

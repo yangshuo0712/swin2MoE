@@ -24,12 +24,12 @@ torchrun \
   --master_addr 127.0.0.1 \
   --master_port 29500 \
   src/main.py \
-    --config cfg_n/sen2venus_exp4_2x_v5.yml \
+    --config cfg_n/sen2venus_exp6_2x_v2.yml \
     --phase test \
     --batch_size 2 \
     --num_workers 4 \
     --epoch 2 \
-    --output output/sen2venus_v26_8 \
+    --output output/2x_DDP_v6 \
     --distributed true \
     --AMP true \
     # --eval_method bicubic
