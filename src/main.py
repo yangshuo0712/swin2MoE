@@ -55,7 +55,7 @@ def parse_configs():
     help_num_workers = 'The number of workers to load dataset. Default: 0'
     parser.add_argument('--num_workers',
                         type=int,
-                        default=0,
+                        default=32,
                         metavar='N',
                         help=help_num_workers)
     parser.add_argument('--output',

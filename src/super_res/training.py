@@ -53,7 +53,6 @@ def train(train_dloader, val_dloader, cfg):
     
     # --- DDP ---
     if getattr(cfg, "distributed", False):
-        model.to(cfg.device)
         model = torch.nn.parallel.DistributedDataParallel(
                 model,
                 device_ids=[device.index],
