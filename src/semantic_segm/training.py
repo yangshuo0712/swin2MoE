@@ -3,6 +3,7 @@ import datetime
 import debug
 
 from tqdm import tqdm
+import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from .validation import validate, save_metrics
@@ -21,6 +22,11 @@ def train(train_dloader, val_dloader, cfg):
     eval_every = cfg.metrics.get('eval_every', 1)
 
     model = build_model(cfg)
+
+    #--------------------
+    model = torch.compile(model)
+    #--------------------
+
     losses = build_losses(cfg)
     optimizer = build_optimizer(model, cfg)
 

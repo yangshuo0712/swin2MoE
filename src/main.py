@@ -17,16 +17,22 @@ def parse_configs():
     parser.add_argument('--local_rank', type=int, default=0,
                         help='Local rank passed by distributed launcher')
     parser.add_argument('--distributed', type=bool, default=False,
-                        help='denote whether use DDP')
+                        help='denote whether to use DDP')
     # ------------
 
     # --- AMP ----
     parser.add_argument('--AMP', type=bool, default=False,
-                        help='denote whether use AMP')
+                        help='denote whether to use AMP')
     # ------------
     parser.add_argument('--debug_iters', type=int, default=None,
                         help='early exit when debuging')
 
+    #-------------
+
+    parser.add_argument('--use_accum',
+                        type=bool,
+                        default=True,
+                        help='denote whether to use accum step')
     # For training and testing
     parser.add_argument('--config',
                         default="cfgs/sen2venus_v26_8.yml",
