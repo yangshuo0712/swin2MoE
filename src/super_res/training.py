@@ -8,6 +8,7 @@ from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
 from contextlib import nullcontext
 from torch import Tensor
+from torch.profiler import profile, ProfilerActivity
 
 from validation import validate, do_save_metrics as save_metrics
 from chk_loader import load_checkpoint, load_state_dict_model, \
@@ -136,24 +137,9 @@ def train_epoch(model, train_dloader, losses, optimizer, epoch, writer,
                 index, cfg, scaler=None):
 
     debug_iters = getattr(cfg, "debug_iters", None)
-
     weights = cfg.losses.weights
 
-    # debug
-    i_in_epoch = 0
-
-    for index, batch in tqdm(
-            enumerate(train_dloader, index), total=len(train_dloader),
-            desc='Epoch: %d / %d' % (epoch + 1, cfg.epochs),
-            disable=not is_main_process()):
-
-
-        if debug_iters is not None:
-            if i_in_epoch < debug_iters:
-                i_in_epoch = i_in_epoch + 1
-            else:
-                break
-
+    def run_one_iter(batch, index):
         # Transfer in-memory data to CUDA devices to speed up training
         hr = batch["hr"].to(device=cfg.device, non_blocking=True)
         lr = batch["lr"].to(device=cfg.device, non_blocking=True)
@@ -161,7 +147,6 @@ def train_epoch(model, train_dloader, losses, optimizer, epoch, writer,
         with torch.amp.autocast('cuda', enabled=getattr(cfg, 'AMP', False)):
 
             sr = model(lr)
-
             loss_tracker = {}
 
             loss_moe = None
@@ -170,26 +155,24 @@ def train_epoch(model, train_dloader, losses, optimizer, epoch, writer,
                 if torch.is_tensor(loss_moe):
                     loss_tracker['loss_moe'] = loss_moe * weights.moe
 
-            #NOTE
+            # NOTE
             sr = sr.contiguous()
 
             if 'pixel_criterion' in losses:
                 loss_tracker['pixel_loss'] = weights.pixel * \
                     losses['pixel_criterion'](sr, hr)
 
-            # cc loss
             if 'cc_criterion' in losses:
                 loss_tracker['cc_loss'] = weights.cc * \
                     losses['cc_criterion'](sr, hr)
 
-            # ssim loss
             if 'ssim_criterion' in losses:
                 loss_tracker['ssim_loss'] = weights.ssim * \
                     losses['ssim_criterion'](sr, hr)
 
-            loss_values: list[Tensor] = list(loss_tracker.values())            # List[Tensor]
-            local_loss: Tensor  = torch.stack(loss_values).sum()          # Tensor
-                
+            loss_values: list[Tensor] = list(loss_tracker.values())
+            local_loss: Tensor = torch.stack(loss_values).sum()
+
         optimizer.zero_grad()
 
         if scaler is not None:
@@ -200,55 +183,65 @@ def train_epoch(model, train_dloader, losses, optimizer, epoch, writer,
             local_loss.backward()
             optimizer.step()
 
-        # debug.log_hr_stats(lr, sr, hr, writer, index, cfg)
-        # debug.log_losses(loss_tracker, 'train', writer, index)
-
         with torch.no_grad():
             global_loss = reduce_tensor(local_loss.detach())
 
         if writer is not None:
             debug.log_hr_stats(lr, sr, hr, writer, index, cfg)
             debug.log_losses({'train_loss': global_loss}, 'train', writer, index)
-    return index
+
+    # ----------- normal training ------------
+    if debug_iters is None:
+        for index, batch in tqdm(
+                enumerate(train_dloader, index), total=len(train_dloader),
+                desc='Epoch: %d / %d' % (epoch + 1, cfg.epochs),
+                disable=not is_main_process()):
+            run_one_iter(batch, index)
+        return index
+
+    # ----------- debug mode with profiler ------------
+    else:
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                     schedule=torch.profiler.schedule(wait=2,warmup=2,active=5),
+                     record_shapes=True) as prof:
+            for i, (idx, batch) in enumerate(
+                    tqdm(enumerate(train_dloader, index),
+                         total=debug_iters,
+                         desc='[DEBUG] Epoch: %d / %d' % (epoch + 1, cfg.epochs),
+                         disable=not is_main_process())):
+                if i >= debug_iters:
+                    break
+                run_one_iter(batch, idx)
+
+        print("\n" + "="*30)
+        print("    PROFILER ANALYSIS RESULT    ")
+        print("="*30)
+        print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=15))
+        print("="*30 + "\n")
+
+        return index
 
 def acc_train_epoch(model, train_dloader, losses, optimizer, epoch, writer,
                 index, cfg, scaler=None):
 
     debug_iters = getattr(cfg, "debug_iters", None)
     accumulation_steps = getattr(cfg, 'accumulation_steps', 4)
-
     weights = cfg.losses.weights
-
-    # debug
-    i_in_epoch = 0
-
-    optimizer.zero_grad()
-    accum_counter = 0
 
     is_ddp = getattr(cfg, "distributed", False) and isinstance(
         model, torch.nn.parallel.DistributedDataParallel)
 
-    total_batches = len(train_dloader)
+    optimizer.zero_grad()
+    accum_counter = 0
 
-    for index, batch in tqdm(
-            enumerate(train_dloader, index), total=total_batches,
-            desc='Epoch: %d / %d' % (epoch + 1, cfg.epochs),
-            disable=not is_main_process()):
+    def run_one_iter(batch, idx):
+        nonlocal accum_counter
 
-        if debug_iters is not None:
-            if i_in_epoch < debug_iters:
-                i_in_epoch = i_in_epoch + 1
-            else:
-                break
-
-        # Transfer in-memory data to CUDA devices to speed up training
         hr = batch["hr"].to(device=cfg.device, non_blocking=True)
         lr = batch["lr"].to(device=cfg.device, non_blocking=True)
 
         with torch.amp.autocast('cuda', enabled=getattr(cfg, 'AMP', False)):
-
             sr = model(lr)
-
             loss_tracker = {}
 
             loss_moe = None
@@ -257,25 +250,22 @@ def acc_train_epoch(model, train_dloader, losses, optimizer, epoch, writer,
                 if torch.is_tensor(loss_moe):
                     loss_tracker['loss_moe'] = loss_moe * weights.moe
 
-            #NOTE
             sr = sr.contiguous()
 
             if 'pixel_criterion' in losses:
                 loss_tracker['pixel_loss'] = weights.pixel * \
                     losses['pixel_criterion'](sr, hr)
 
-            # cc loss
             if 'cc_criterion' in losses:
                 loss_tracker['cc_loss'] = weights.cc * \
                     losses['cc_criterion'](sr, hr)
 
-            # ssim loss
             if 'ssim_criterion' in losses:
                 loss_tracker['ssim_loss'] = weights.ssim * \
                     losses['ssim_criterion'](sr, hr)
 
-            loss_values: list[Tensor] = list(loss_tracker.values())            # List[Tensor]
-            local_loss: Tensor  = torch.stack(loss_values).sum()          # Tensor
+            loss_values: list[Tensor] = list(loss_tracker.values())
+            local_loss: Tensor = torch.stack(loss_values).sum()
 
         accum_counter += 1
         is_update_step = (accum_counter % accumulation_steps == 0)
@@ -302,15 +292,52 @@ def acc_train_epoch(model, train_dloader, losses, optimizer, epoch, writer,
                 global_loss = reduce_tensor(local_loss.detach())
 
             if writer is not None:
-                debug.log_hr_stats(lr, sr, hr, writer, index, cfg)
-                debug.log_losses({'train_loss': global_loss}, 'train', writer, index)
+                debug.log_hr_stats(lr, sr, hr, writer, idx, cfg)
+                debug.log_losses({'train_loss': global_loss}, 'train', writer, idx)
 
-    if (accum_counter % accumulation_steps) != 0:
-        if scaler is not None:
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            optimizer.step()
-        optimizer.zero_grad()
+    # ----------- normal training ------------
+    if debug_iters is None:
+        for index, batch in tqdm(
+                enumerate(train_dloader, index), total=len(train_dloader),
+                desc='Epoch: %d / %d' % (epoch + 1, cfg.epochs),
+                disable=not is_main_process()):
+            run_one_iter(batch, index)
 
-    return index
+        if (accum_counter % accumulation_steps) != 0:
+            if scaler is not None:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+            optimizer.zero_grad()
+        return index
+
+    # ----------- debug mode with profiler ------------
+    else:
+        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                     schedule=torch.profiler.schedule(wait=2,warmup=2,active=5),
+                     record_shapes=True) as prof:
+            for i, (idx, batch) in enumerate(
+                    tqdm(enumerate(train_dloader, index),
+                         total=debug_iters,
+                         desc='[DEBUG] Epoch: %d / %d' % (epoch + 1, cfg.epochs),
+                         disable=not is_main_process())):
+                if i >= debug_iters:
+                    break
+                run_one_iter(batch, idx)
+
+        if (accum_counter % accumulation_steps) != 0:
+            if scaler is not None:
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                optimizer.step()
+            optimizer.zero_grad()
+
+        print("\n" + "="*30)
+        print("    PROFILER ANALYSIS RESULT    ")
+        print("="*30)
+        print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=15))
+        print("="*30 + "\n")
+
+        return index
