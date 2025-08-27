@@ -17,6 +17,7 @@ from timm.layers import DropPath, to_2tuple, trunc_normal_
 from utils import is_main_process
 
 from .ps_moe import MoE
+from .moe_cadr import ComplexityAwareMoE
 from .utils import Mlp, window_partition, window_reverse
 
 
@@ -364,7 +365,9 @@ class SwinTransformerBlock(nn.Module):
         else:
             # print('-->>> Using Parameter-Shared MoE (PS-MoE)')
             # The input_size for the MoE experts needs an extra dimension for the band_index
-            self.mlp = MoE(
+            use_cadr = MoE_config.get("use_cadr", False)
+            MoEClass = ComplexityAwareMoE if use_cadr else MoE 
+            self.mlp = MoEClass(
                 input_size=dim,
                 output_size=dim,
                 hidden_size=mlp_hidden_dim,
@@ -1011,8 +1014,11 @@ class Swin2SR(nn.Module):
         # -- MODIFICATION START --
         # If using PS-MoE, automatically set the number of bands from the input channels
         self.is_moe = MoE_config is not None
-        if self.is_moe:
+        # must, or lsp will throw error
+        if self.is_moe and MoE_config is not None:
+            use_cadr = MoE_config.get("use_cadr", False)
             if is_main_process():
+                print(f"--->>> Using {'Complexity-Aware (CADR)' if use_cadr else 'Standard'} PS-MoE")
                 print(f"PS-MoE is enabled with config: {MoE_config}")
                 if "num_bands" not in MoE_config or MoE_config["num_bands"] is None:
                     MoE_config["num_bands"] = in_chans

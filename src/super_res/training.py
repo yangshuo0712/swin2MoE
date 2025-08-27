@@ -215,7 +215,7 @@ def acc_train_epoch(model, train_dloader, losses, optimizer, epoch, writer,
                 index, cfg, scaler=None):
 
     debug_iters = getattr(cfg, "debug_iters", None)
-    accumulation_steps = getattr(cfg, 'accumulation_steps', 16)
+    accumulation_steps = getattr(cfg, 'accumulation_steps', 4)
 
     weights = cfg.losses.weights
 

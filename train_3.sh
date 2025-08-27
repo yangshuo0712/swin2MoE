@@ -12,7 +12,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
 # Select visible GPUs (physical IDs 1 and 2)
-export CUDA_VISIBLE_DEVICES=3,4,5,6
+export CUDA_VISIBLE_DEVICES=1,2
 export TORCH_DISTRIBUTED_DEBUG=DETAIL
 # export NCCL_DEBUG=INFO
 # export NCCL_DEBUG_SUBSYS=ALL
@@ -20,18 +20,18 @@ export TORCH_DISTRIBUTED_DEBUG=DETAIL
 # Launch training with torchrun
 torchrun \
   --nnodes 1 \
-  --nproc-per-node 4 \
+  --nproc-per-node 2 \
   --master_addr 127.0.0.1 \
   --master_port 29501 \
   src/main.py \
-    --config cfg_n/sen2venus_exp6_2x_v2.yml \
+    --config cfg_n/sen2venus_exp6_2x_v3.yml \
     --phase train \
     --batch_size 2 \
     --num_workers 32 \
     --distributed true \
     --AMP true \
-    --use_accum true \
-    --output ./output/2x_DDP_v6
+    --output ./output/2x_DDP_v3
 
+    # --use_accum true \
     # --debug_iters 10 \
     # --config cfg_n/sen2venus_exp4_2x_v5.yml \

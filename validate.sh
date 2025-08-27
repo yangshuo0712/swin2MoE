@@ -7,6 +7,8 @@
 
 set -euo pipefail
 
+EPOCH=${1:-2}
+
 # Absolute path to this script
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
@@ -22,14 +24,14 @@ torchrun \
   --nnodes 1 \
   --nproc-per-node 2 \
   --master_addr 127.0.0.1 \
-  --master_port 29500 \
+  --master_port 29501 \
   src/main.py \
     --config cfg_n/sen2venus_exp6_2x_v2.yml \
     --phase test \
     --batch_size 2 \
-    --num_workers 4 \
-    --epoch 2 \
-    --output output/2x_DDP_v6 \
+    --num_workers 32 \
+    --epoch "$EPOCH" \
+    --output output/2x_DDP_v6_80 \
     --distributed true \
     --AMP true \
     # --eval_method bicubic

@@ -145,7 +145,8 @@ def do_save_metrics(metrics, cfg):
 
 def load_metrics(cfg):
     filename = get_result_filename(cfg)
-    print('load results {}'.format(filename))
+    if is_main_process():
+        print('load results {}'.format(filename))
     result = torch.load(filename)
     # check if epoch corresponds
     assert result['epoch'] == cfg.epoch

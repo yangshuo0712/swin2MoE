@@ -4,7 +4,7 @@ import os
 import torch.distributed as dist
 
 from config import parse_config
-from utils import load_fun, set_deterministic
+from utils import is_main_process, load_fun, set_deterministic
 from visualize import main as vis_main
 from validation import main as val_main, print_metrics as val_print_metrics, \
         load_metrics
@@ -126,47 +126,54 @@ def init_distributed(cfg):
 
 def cleanup_distributed(cfg):
     if getattr(cfg, "distributed", False) and dist.is_initialized():
-        dist.barrier(device_ids=[cfg.local_rank])
+        dist.barrier()  # Ensure all ranks synchronize here before destroying the process group
         dist.destroy_process_group()
 
 def main(cfg):
-    # pdb.set_trace()
-    init_distributed(cfg)
-    load_dataset_fun = load_fun(cfg.dataset.get(
-        'load_dataset', 'datasets.sen2venus.load_dataset'))
-    
-    if cfg.phase == 'avg_time':
-        print(measure_avg_time(cfg))
-    elif cfg.phase == 'train':
-        train_fun = load_fun(cfg.get('train', 'srgan.training.train'))
-        train_dloader, val_dloader, _ = load_dataset_fun(cfg)
-        train_fun = load_fun(cfg.get('train', 'srgan.training.train'))
-        train_fun(train_dloader, val_dloader, cfg)
-    elif cfg.phase == 'mean_std':
-        if 'stats' in cfg.dataset.keys():
-            cfg.dataset.pop('stats')
-        _, _, concat_dloader = load_dataset_fun(cfg, concat_datasets=True)
-        fun = load_fun(cfg.get(cfg.phase))
-        fun(concat_dloader, cfg)
-    elif cfg.phase == 'plot_data':
-        _, _, concat_dloader = load_dataset_fun(cfg, concat_datasets=True)
-        fun = load_fun(cfg.get(cfg.phase))
-        fun(concat_dloader, cfg)
-    elif cfg.phase == 'vis':
-        cfg['batch_size'] = 1
-        vis_main(cfg)
-    elif cfg.phase == 'test':
-        try:
-            if cfg.eval_method is not None:
-                raise FileNotFoundError()
-            metrics = load_metrics(cfg)
-        except FileNotFoundError:
-            _, val_dloader, _ = load_dataset_fun(cfg, only_test=True)
-            metrics = val_main(
-                val_dloader, cfg, save_metrics=cfg.eval_method is None)
-        val_print_metrics(metrics)
+    try:
+        init_distributed(cfg)
+        load_dataset_fun = load_fun(cfg.dataset.get(
+            'load_dataset', 'datasets.sen2venus.load_dataset'))
 
-    cleanup_distributed(cfg)
+        # Training or evaluation phases
+        if cfg.phase == 'avg_time':
+            print(measure_avg_time(cfg))
+        elif cfg.phase == 'train':
+            train_fun = load_fun(cfg.get('train', 'srgan.training.train'))
+            train_dloader, val_dloader, _ = load_dataset_fun(cfg)
+            train_fun(train_dloader, val_dloader, cfg)
+        elif cfg.phase == 'mean_std':
+            if 'stats' in cfg.dataset.keys():
+                cfg.dataset.pop('stats')
+            _, _, concat_dloader = load_dataset_fun(cfg, concat_datasets=True)
+            fun = load_fun(cfg.get(cfg.phase))
+            fun(concat_dloader, cfg)
+        elif cfg.phase == 'plot_data':
+            _, _, concat_dloader = load_dataset_fun(cfg, concat_datasets=True)
+            fun = load_fun(cfg.get(cfg.phase))
+            fun(concat_dloader, cfg)
+        elif cfg.phase == 'vis':
+            cfg['batch_size'] = 1
+            vis_main(cfg)
+        elif cfg.phase == 'test':
+            try:
+                if cfg.eval_method is not None:
+                    raise FileNotFoundError()
+                metrics = load_metrics(cfg)
+            except FileNotFoundError:
+                _, val_dloader, _ = load_dataset_fun(cfg, only_test=True)
+                metrics = val_main(
+                    val_dloader, cfg, save_metrics=cfg.eval_method is None)
+            if is_main_process():
+                val_print_metrics(metrics)
+    except Exception as e:
+        print(f"Error occurred: {e}")
+    finally:
+        # Ensure cleanup happens even in case of error
+        try:
+            cleanup_distributed(cfg)
+        except Exception as cleanup_error:
+            print(f"Error during cleanup: {cleanup_error}")
 
 if __name__ == "__main__":
     # parse input arguments

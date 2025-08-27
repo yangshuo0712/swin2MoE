@@ -7,7 +7,8 @@ dataset:
   denorm: mods.v3.uncollate_fn
   printable: mods.v3.printable
 optim: {
-  learning_rate: 0.0001,
+  #0.0001
+  learning_rate: 0.00001,
   model_betas: [0.9, 0.999],
   model_eps: 0.00000001,
   model_weight_decay: 0
