@@ -49,15 +49,14 @@ class CAEC_MoE(nn.Module):
 
     def forward(self, x, band_indices):
         """
-        x: [B, S, C_in]
-        band_indices: [B, S] -- integer band indices
-        returns: final_output [B, S, output_size], complexity_loss (scalar)
+        x: [N_tokens, C_in] -- This is the key change
+        band_indices: [N_tokens] -- integer band indices
+        returns: final_output [N_tokens, output_size], complexity_loss (scalar)
         """
-        batch_size, seq_len, in_channels = x.shape
+        num_tokens, in_channels = x.shape
         assert in_channels == self.input_size, "input channels mismatch"
 
-        x_flat = x.view(-1, in_channels)               # [N_tokens, input_size]
-        num_tokens = x_flat.shape[0]                   # N = B * S
+        x_flat = x
         device = x.device
         dtype = x.dtype
 
@@ -133,8 +132,7 @@ class CAEC_MoE(nn.Module):
 
         # Final output: residual + aggregated expert contribution
         combined_outputs = residual + aggregated  # [N, output_size]
-
-        final_output = combined_outputs.view(batch_size, seq_len, self.output_size)
+        final_output = combined_outputs # The calling function will reshape it
 
         # 6. Complexity utilization loss
         complexity_loss = self.complexity_utilization_loss(complexity_scores) * self.complexity_loss_weight

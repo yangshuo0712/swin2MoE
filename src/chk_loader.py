@@ -76,7 +76,7 @@ def load_checkpoint(cfg) -> Dict[str, Any]:
 #
 #     return checkpoint['epoch'] + 1, checkpoint['index']
 
-def load_state_dict_model(model, optimizer, checkpoint) -> Tuple[int, int]:
+def load_state_dict_model(model, optimizer, scheduler, checkpoint) -> Tuple[int, int]:
     """
     Load both model & optimizer state. Returns (next_epoch, index).
     Handles possible 'module.' prefixes automatically.
@@ -109,6 +109,11 @@ def load_state_dict_model(model, optimizer, checkpoint) -> Tuple[int, int]:
     if is_main_process():
         print('load optimizer state')
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+
+    if scheduler and 'scheduler_state_dict' in checkpoint:
+        if is_main_process():
+            print('load scheduler state')
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
 
     return checkpoint['epoch'] + 1, checkpoint['index']
 
@@ -150,7 +155,7 @@ def load_state_dict_model_only(model, checkpoint) -> Tuple[int, int]:
 #
 #         torch.save(checkpoint, path)
 
-def save_state_dict_model(model, optimizer, epoch, index, cfg):
+def save_state_dict_model(model, optimizer, scheduler, epoch, index, cfg):
     """
     Save checkpoint on rank0 only.
     """
@@ -174,6 +179,8 @@ def save_state_dict_model(model, optimizer, epoch, index, cfg):
             'optimizer_state_dict': optimizer.state_dict(),
             'index': index,
         }
+        if scheduler:
+            checkpoint['scheduler_state_dict'] = scheduler.state_dict()
 
         torch.save(checkpoint, path)
 

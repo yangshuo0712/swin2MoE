@@ -30,7 +30,6 @@ def reduce_tensor(tensor, op=dist.ReduceOp.SUM):
 # -----------
 
 def train(train_dloader, val_dloader, cfg):
-
     # Tensorboard
     # writer = SummaryWriter(cfg.output + '/tensorboard/train_{}'.format(
     #     datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")))
@@ -65,7 +64,7 @@ def train(train_dloader, val_dloader, cfg):
     # -----------
 
     losses = build_losses(cfg)
-    optimizer = build_optimizer(model, cfg)
+    optimizer, scheduler = build_optimizer(model, cfg)
 
     # --- AMP ----
     scaler = torch.amp.GradScaler('cuda', enabled=getattr(cfg, 'AMP', False))
@@ -76,7 +75,7 @@ def train(train_dloader, val_dloader, cfg):
     try:
         checkpoint = load_checkpoint(cfg)
         begin_epoch, index = load_state_dict_model(
-            model, optimizer, checkpoint)
+            model, optimizer, scheduler, checkpoint)
     except FileNotFoundError:
         print('no checkpoint found')
 
@@ -103,6 +102,7 @@ def train(train_dloader, val_dloader, cfg):
                 train_dloader,
                 losses,
                 optimizer,
+                scheduler,
                 e,
                 writer,
                 index,
@@ -114,11 +114,15 @@ def train(train_dloader, val_dloader, cfg):
                 train_dloader,
                 losses,
                 optimizer,
+                scheduler,
                 e,
                 writer,
                 index,
                 cfg,
                 scaler)
+
+        if scheduler:
+            scheduler.step()
 
         if (e + 1) % eval_every == 0:
             if cfg.distributed:
@@ -132,9 +136,9 @@ def train(train_dloader, val_dloader, cfg):
             if cfg.distributed:
                 dist.barrier(device_ids=[cfg.local_rank])
 
-            save_state_dict_model(model, optimizer, e, index, cfg)
+            save_state_dict_model(model, optimizer, scheduler, e, index, cfg)
 
-def train_epoch(model, train_dloader, losses, optimizer, epoch, writer,
+def train_epoch(model, train_dloader, losses, optimizer, scheduler, epoch, writer,
                 index, cfg, scaler=None):
 
     debug_iters = getattr(cfg, "debug_iters", None)
@@ -222,7 +226,7 @@ def train_epoch(model, train_dloader, losses, optimizer, epoch, writer,
 
         return index
 
-def acc_train_epoch(model, train_dloader, losses, optimizer, epoch, writer,
+def acc_train_epoch(model, train_dloader, losses, optimizer, schedule, epoch, writer,
                 index, cfg, scaler=None):
 
     debug_iters = getattr(cfg, "debug_iters", None)

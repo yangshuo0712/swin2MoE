@@ -7,11 +7,16 @@ dataset:
   denorm: mods.v3.uncollate_fn
   printable: mods.v3.printable
 optim: {
-  #0.0001
-  learning_rate: 0.00001,
+  learning_rate: 0.0006,
   model_betas: [0.9, 0.999],
   model_eps: 0.00000001,
-  model_weight_decay: 0
+  model_weight_decay: 0,
+  scheduler: {
+    type: 'CosineAnnealingLR',
+    T_max: 25,
+    eta_min: 0.000001,
+    warmup_epochs: 3
+  }
 }
 super_res: {
   version: 'v2',
