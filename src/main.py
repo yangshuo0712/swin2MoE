@@ -168,6 +168,8 @@ def main(cfg):
                 val_print_metrics(metrics)
     except Exception as e:
         print(f"Error occurred: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         # Ensure cleanup happens even in case of error
         try:

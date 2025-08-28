@@ -18,6 +18,7 @@ from utils import is_main_process
 
 from .ps_moe import MoE
 from .moe_cadr import ComplexityAwareMoE
+from .caec_moe import CAEC_MoE
 from .utils import Mlp, window_partition, window_reverse
 
 
@@ -363,20 +364,35 @@ class SwinTransformerBlock(nn.Module):
             )
             self.is_moe = False
         else:
-            # print('-->>> Using Parameter-Shared MoE (PS-MoE)')
-            # The input_size for the MoE experts needs an extra dimension for the band_index
-            use_cadr = MoE_config.get("use_cadr", False)
-            MoEClass = ComplexityAwareMoE if use_cadr else MoE 
-            self.mlp = MoEClass(
-                input_size=dim,
-                output_size=dim,
-                hidden_size=mlp_hidden_dim,
-                num_experts=MoE_config.get("num_experts", 8),
-                k=MoE_config.get("k", 2),
-                num_bands=MoE_config.get("num_bands"),
-                lora_rank=MoE_config.get("lora_rank"),
-                lora_alpha=MoE_config.get("lora_alpha"),
-            )
+            use_caec = MoE_config.get("use_caec", False)
+            if use_caec:
+                # print('-->>> Using Complexity-Aware Expert Choice MoE (CAEC-MoE)')
+                self.mlp = CAEC_MoE(
+                    input_size=dim,
+                    output_size=dim,
+                    hidden_size=mlp_hidden_dim,
+                    num_experts=MoE_config.get("num_experts", 8),
+                    k=MoE_config.get("k", 2), # k is not directly used in expert choice, but kept for compatibility
+                    num_bands=MoE_config.get("num_bands"),
+                    lora_rank=MoE_config.get("lora_rank"),
+                    lora_alpha=MoE_config.get("lora_alpha"),
+                    capacity_factor=MoE_config.get("capacity_factor", 1.25),
+                    complexity_loss_weight=MoE_config.get("complexity_loss_weight", 0.1)
+                )
+            else:
+                # print('-->>> Using Parameter-Shared MoE (PS-MoE)')
+                use_cadr = MoE_config.get("use_cadr", False)
+                MoEClass = ComplexityAwareMoE if use_cadr else MoE
+                self.mlp = MoEClass(
+                    input_size=dim,
+                    output_size=dim,
+                    hidden_size=mlp_hidden_dim,
+                    num_experts=MoE_config.get("num_experts", 8),
+                    k=MoE_config.get("k", 2),
+                    num_bands=MoE_config.get("num_bands"),
+                    lora_rank=MoE_config.get("lora_rank"),
+                    lora_alpha=MoE_config.get("lora_alpha"),
+                )
             self.is_moe = True
         # -- MODIFICATION END --
 

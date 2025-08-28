@@ -26,12 +26,12 @@ torchrun \
   --master_addr 127.0.0.1 \
   --master_port 29501 \
   src/main.py \
-    --config cfg_n/sen2venus_exp6_2x_v2.yml \
+    --config cfg_n/sen2venus_exp6_2x_v3.yml \
     --phase test \
     --batch_size 2 \
-    --num_workers 32 \
+    --num_workers 16 \
     --epoch "$EPOCH" \
-    --output output/2x_DDP_v6_80 \
+    --output output/2x_DDP_v3_80 \
     --distributed true \
     --AMP true \
     # --eval_method bicubic

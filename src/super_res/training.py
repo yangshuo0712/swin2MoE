@@ -46,7 +46,8 @@ def train(train_dloader, val_dloader, cfg):
     model = build_model(cfg)
 
     #--------------------
-    model = torch.compile(model)
+    if getattr(cfg, "debug_iters", None) is None:
+        model = torch.compile(model)
     #--------------------
 
     device = cfg.device
@@ -314,30 +315,31 @@ def acc_train_epoch(model, train_dloader, losses, optimizer, epoch, writer,
 
     # ----------- debug mode with profiler ------------
     else:
-        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                     schedule=torch.profiler.schedule(wait=2,warmup=2,active=5),
-                     record_shapes=True) as prof:
-            for i, (idx, batch) in enumerate(
-                    tqdm(enumerate(train_dloader, index),
-                         total=debug_iters,
-                         desc='[DEBUG] Epoch: %d / %d' % (epoch + 1, cfg.epochs),
-                         disable=not is_main_process())):
-                if i >= debug_iters:
-                    break
-                run_one_iter(batch, idx)
+        if is_main_process():
+            prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                           schedule=torch.profiler.schedule(wait=2, warmup=2, active=5),
+                           record_shapes=True)
+            with prof:
+                for i, (idx, batch) in enumerate(
+                        tqdm(enumerate(train_dloader, index),
+                             total=debug_iters,
+                             desc='[DEBUG] Epoch: %d / %d' % (epoch + 1, cfg.epochs),
+                             disable=not is_main_process())):
+                    if i >= debug_iters:
+                        break
+                    run_one_iter(batch, idx)
+                    prof.step()
 
-        if (accum_counter % accumulation_steps) != 0:
-            if scaler is not None:
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                optimizer.step()
-            optimizer.zero_grad()
-
-        print("\n" + "="*30)
-        print("    PROFILER ANALYSIS RESULT    ")
-        print("="*30)
-        print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=15))
-        print("="*30 + "\n")
+            print("\n" + "="*30)
+            print("    PROFILER ANALYSIS RESULT    ")
+            print("="*30)
+            print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=15))
+            print("="*30 + "\n")
+        else:
+            for index, batch in tqdm(
+                    enumerate(train_dloader, index), total=len(train_dloader),
+                    desc='Epoch: %d / %d' % (epoch + 1, cfg.epochs),
+                    disable=not is_main_process()):
+                run_one_iter(batch, index)
 
         return index

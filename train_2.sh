@@ -27,11 +27,11 @@ torchrun \
     --config cfg_n/sen2venus_exp6_2x_v3.yml \
     --phase train \
     --batch_size 12 \
-    --num_workers 32 \
+    --num_workers 16 \
     --distributed true \
     --AMP true \
     --use_accum true \
-    --debug_iters 25 \
     --output ./output/2x_DDP_v3_80
 
+    # --debug_iters 25 \
     # --config cfg_n/sen2venus_exp4_2x_v5.yml \
