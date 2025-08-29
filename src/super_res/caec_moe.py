@@ -41,11 +41,12 @@ class CAEC_MoE(nn.Module):
         # residual skip projection: map input feature -> output dim for tokens that are not processed
         self.skip_proj = nn.Linear(input_size, output_size)
 
-    def complexity_utilization_loss(self, complexity_scores):
+    def complexity_utilization_loss(self, complexity_scores, eps=1e-8):
         # complexity_scores: [N_tokens, 1]
         # return negative variance of scalar scores
         s = complexity_scores.view(-1)
-        return -torch.var(s)
+        var_s = torch.var(s)
+        return -torch.log(var_s + eps)
 
     def forward(self, x, band_indices):
         """

@@ -299,6 +299,9 @@ def acc_train_epoch(model, train_dloader, losses, optimizer, schedule, epoch, wr
             if writer is not None:
                 debug.log_hr_stats(lr, sr, hr, writer, idx, cfg)
                 debug.log_losses({'train_loss': global_loss}, 'train', writer, idx)
+                for loss_name, loss_value in loss_tracker.items():
+                    if torch.is_tensor(loss_value):
+                        writer.add_scalar(f"train/{loss_name}", loss_value.item(), idx)
 
     # ----------- normal training ------------
     if debug_iters is None:

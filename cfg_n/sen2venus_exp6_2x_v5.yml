@@ -31,19 +31,18 @@ losses:
     moe: 0.2
 
 super_res:
-  version: 'PS'
+  version: 'FEC-DPS-MOE' # Set the version to use the new model
   model:
     mlp_ratio: 1
     upscale: 2
+    in_chans: 4
     MoE_config:
-      use_caec: true
       num_experts: 8
-      k: 2
       num_bands: 4
       lora_rank: 4
       lora_alpha: 8.0
       capacity_factor: 1.25
-      complexity_loss_weight: 0.001
+      dct_freq_features: 64 # New parameter for frequency features
 
 metrics:
   upscale_factor: 2
