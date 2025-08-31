@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 
 from .ps_moe import SharedExpertMLP
+from .dct_extractor import  HybridFrequencyExtractor
 
 class FreqAwareExpertChoiceMoE(nn.Module):
     """
@@ -104,15 +105,25 @@ class FreqAwareExpertChoiceMoE(nn.Module):
 
         # Step 3: Expert Choice Routing
         expert_capacity = max(1, int((num_tokens / float(self.num_experts)) * self.capacity_factor))
+        k = min(expert_capacity, num_tokens)
+
         expert_scores_transposed = affinity_scores.transpose(0, 1)  # [E, N]
-        top_k_scores, top_k_indices = torch.topk(expert_scores_transposed, k=expert_capacity, dim=1)
+        top_k_scores, top_k_indices = torch.topk(expert_scores_transposed, k=k, dim=1)
 
         # Step 4: Create dispatch mask and gating weights
-        dispatch_mask = torch.zeros_like(affinity_scores, device=device, dtype=torch.bool)
-        dispatch_mask.scatter_(1, top_k_indices.transpose(0, 1), True)
-        
-        masked_scores = affinity_scores.masked_fill(~dispatch_mask, -float('inf'))
-        gating_weights = torch.softmax(masked_scores, dim=1)
+        dispatch_mask = torch.zeros((num_tokens, self.num_experts), device=device, dtype=torch.bool)  # [N, E]
+        rows = top_k_indices  # [E, k]
+        cols = torch.arange(self.num_experts, device=device).unsqueeze(1).expand_as(rows)  # [E, k]
+        dispatch_mask[rows, cols] = True  #(token, expert)
+
+        uncovered = ~dispatch_mask.any(dim=1)  # [N]
+        if uncovered.any():
+            best_expert = affinity_scores[uncovered].argmax(dim=1)  # [n_uncovered]
+            dispatch_mask[uncovered, best_expert] = True
+
+        masked_scores = affinity_scores.masked_fill(~dispatch_mask, -float('inf'))  # [N, E]
+        gating_weights = torch.softmax(masked_scores, dim=1)  # [N, E]
+        gating_weights = torch.where(dispatch_mask, gating_weights, torch.zeros_like(gating_weights))
 
         # Step 5: Dispatch tokens and compute expert outputs
         final_output = torch.zeros((num_tokens, self.output_size), device=device, dtype=dtype)

@@ -24,14 +24,14 @@ torchrun \
   --nnodes 1 \
   --nproc-per-node 2 \
   --master_addr 127.0.0.1 \
-  --master_port 29501 \
+  --master_port 29502 \
   src/main.py \
-    --config cfg_n/sen2venus_exp6_2x_v4.yml \
+    --config cfg_n/sen2venus_exp6_2x_v5.yml \
     --phase test \
     --batch_size 2 \
     --num_workers 16 \
     --epoch "$EPOCH" \
-    --output output/2x_DDP_v4 \
+    --output output/2x_DDP_v5 \
     --distributed true \
     --AMP true \
     # --eval_method bicubic

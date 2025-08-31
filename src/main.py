@@ -10,6 +10,7 @@ from validation import main as val_main, print_metrics as val_print_metrics, \
         load_metrics
 from debug import measure_avg_time
 # import pdb
+
 def parse_configs():
     parser = argparse.ArgumentParser(description='SuperRes model')
 
@@ -101,33 +102,76 @@ def parse_configs():
     args = parser.parse_args()
     return parse_config(args)
 
+
 def init_distributed(cfg):
-    if not getattr(cfg, "distributed", False):
+    """
+    Initialize distributed environment.
+
+    Logic:
+    - If WORLD_SIZE env var > 1, treat as distributed (torchrun / launcher).
+    - Else fall back to cfg.distributed flag (for explicit CLI).
+    - Set CUDA device using local_rank BEFORE calling init_process_group.
+    - Call dist.init_process_group with env:// and then barrier.
+    """
+    # Prefer environment variables set by torch.distributed launcher
+    world_size_env = int(os.environ.get("WORLD_SIZE", 1))
+    rank_env = int(os.environ.get("RANK", 0))
+    local_rank_env = int(os.environ.get("LOCAL_RANK", getattr(cfg, "local_rank", 0)))
+
+    use_distributed = world_size_env > 1 or getattr(cfg, "distributed", False)
+
+    if not use_distributed:
+        # Single-process (or user explicitly disabled distributed)
+        cfg.distributed = False
         cfg.rank = 0
         cfg.world_size = 1
         cfg.local_rank = 0
         cfg.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         return
-    
-    # env:// style (torchrun)
-    cfg.rank = int(os.environ.get("RANK", 0))
-    cfg.world_size = int(os.environ.get("WORLD_SIZE", 1))
-    cfg.local_rank = int(os.environ.get("LOCAL_RANK", cfg.local_rank))
 
-    torch.cuda.set_device(cfg.local_rank)
-    cfg.device = torch.device(f"cuda:{cfg.local_rank}")
+    # Otherwise initialize distributed process group using env://
+    cfg.distributed = True
+    cfg.rank = rank_env
+    cfg.world_size = world_size_env
+    cfg.local_rank = local_rank_env
 
+    # Set CUDA visible device for this process BEFORE init_process_group
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.set_device(cfg.local_rank)
+            cfg.device = torch.device(f"cuda:{cfg.local_rank}")
+        except Exception as e:
+            # fallback
+            cfg.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            print(f"Warning setting cuda device by local_rank failed: {e}")
+    else:
+        cfg.device = torch.device("cpu")
+
+    # Initialize process group. Using env:// so rank/world_size come from env vars.
+    # Note: some PyTorch versions accept device_id kwarg; we rely on setting device before init.
     dist.init_process_group(
-        backend="nccl",
+        backend="nccl" if torch.cuda.is_available() else "gloo",
         init_method="env://",
         rank=cfg.rank,
-        world_size=cfg.world_size
+        world_size=cfg.world_size,
     )
+
+    # synchronize
+    dist.barrier()
+
 
 def cleanup_distributed(cfg):
     if getattr(cfg, "distributed", False) and dist.is_initialized():
-        dist.barrier()  # Ensure all ranks synchronize here before destroying the process group
-        dist.destroy_process_group()
+        try:
+            dist.barrier()
+        except Exception:
+            # ignore barrier errors during shutdown
+            pass
+        try:
+            dist.destroy_process_group()
+        except Exception as e:
+            print(f"Warning destroying process group: {e}")
+
 
 def main(cfg):
     try:
@@ -153,7 +197,14 @@ def main(cfg):
             fun = load_fun(cfg.get(cfg.phase))
             fun(concat_dloader, cfg)
         elif cfg.phase == 'vis':
-            cfg['batch_size'] = 1
+            # cfg may be dict-like or object. handle both safely.
+            try:
+                cfg.batch_size = 1
+            except Exception:
+                try:
+                    cfg['batch_size'] = 1
+                except Exception:
+                    pass
             vis_main(cfg)
         elif cfg.phase == 'test':
             try:
@@ -176,6 +227,7 @@ def main(cfg):
             cleanup_distributed(cfg)
         except Exception as cleanup_error:
             print(f"Error during cleanup: {cleanup_error}")
+
 
 if __name__ == "__main__":
     # parse input arguments

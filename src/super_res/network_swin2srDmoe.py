@@ -304,9 +304,7 @@ class SwinTransformerBlock(nn.Module):
 
         self.is_moe = MoE_config is not None
         if MoE_config:
-            version = model_version if model_version else "PS-MoE"
-            if is_main_process():
-                print(f"-->>> Using MoE version: {version}")
+            version = model_version
             if version == "FEC-DPS-MOE":
                 self.mlp = FreqAwareExpertChoiceMoE(
                     input_size=dim,
@@ -877,6 +875,11 @@ class Swin2SR(nn.Module):
         self.window_size = window_size
         self.is_moe = MoE_config is not None
         
+        if self.is_moe:
+            version = model_version if model_version else "PS-MoE"
+            if is_main_process():
+                print(f"-->>> Using MoE version: {version}")
+
         # NOTE: MoE_config is now passed directly as a dict.
         if self.is_moe and ("num_bands" not in MoE_config or MoE_config["num_bands"] is None):
             MoE_config["num_bands"] = in_chans

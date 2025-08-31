@@ -15,9 +15,10 @@ def is_dist_avail_and_initialized():
 # def is_main_process():
 #     return (not is_dist_avail_and_initialized()) or dist.get_rank() == 0
 
+
 def is_main_process():
     if not is_dist_avail_and_initialized():
-        return os.environ.get("RANK") == "0"
+        return os.environ.get("RANK") is None or os.environ.get("RANK") == "0"
     return dist.get_rank() == 0
 
 def set_deterministic(seed):

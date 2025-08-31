@@ -18,14 +18,16 @@ def build_model(cfg):
         from .network_swinir import SwinIR as SRModel
     elif version == 'v2':
         from .network_swin2sr import Swin2SR as SRModel
-    elif version in ('PS', 'FEC-DPS-MOE', 'CAEC-MoE', 'CADR'):
+    elif version in ('PS', 'CAEC-MoE', 'CADR'):
         # Added new versions to this model class, now mapping to the new file.
         from .network_swin2srDmoe import Swin2SR as SRModel
     elif version == 'swinfir':
         from .swinfir_arch import SwinFIR as SRModel
+    elif version == 'FEC-DPS-MOE':
+        from .network_swin2srDmoe import Swin2SR as SRModel
     else:
         raise ValueError(f"Unknown model version: {version}")
 
-    model = SRModel(**cfg.super_res.model).to(cfg.device)
+    model = SRModel(**cfg.super_res.model, model_version=version).to(cfg.device)
 
     return model
