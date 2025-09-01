@@ -43,6 +43,7 @@ super_res:
       lora_alpha: 8.0
       capacity_factor: 1.25
       dct_freq_features: 64 # New parameter for frequency features
+      dct_extractor: 'HybridFrequencyExtractor'
 
 metrics:
   upscale_factor: 2

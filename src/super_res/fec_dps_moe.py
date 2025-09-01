@@ -3,6 +3,7 @@ import torch.nn as nn
 
 from .ps_moe import SharedExpertMLP
 from .dct_extractor import  HybridFrequencyExtractor
+from ..utils import is_main_process
 
 class FreqAwareExpertChoiceMoE(nn.Module):
     """
@@ -19,7 +20,8 @@ class FreqAwareExpertChoiceMoE(nn.Module):
     """
     def __init__(self, input_size: int, output_size: int, hidden_size: int, num_experts: int, 
                  num_bands: int, lora_rank: int, lora_alpha: float,
-                 capacity_factor: float = 1.25, dct_freq_features: int = 64):
+                 capacity_factor: float = 1.25, dct_freq_features: int = 64,
+                 dct_extractor:str = 'linear'):
         """
         Initializes the FreqAwareExpertChoiceMoE module.
 
@@ -33,6 +35,7 @@ class FreqAwareExpertChoiceMoE(nn.Module):
             lora_alpha (float): The scaling factor for the LoRA adapters.
             capacity_factor (float): Factor to determine each expert's capacity.
             dct_freq_features (int): The dimensionality of the extracted frequency features.
+            dct_extractor (str): The type of DCT extractor to use ('linear', 'DCT', 'HybridFrequencyExtractor').
         """
         super().__init__()
         self.num_experts = num_experts
@@ -50,7 +53,16 @@ class FreqAwareExpertChoiceMoE(nn.Module):
 
         # A simple linear layer to simulate frequency feature extraction (e.g., from DCT)
         # In a full implementation, this could be a small CNN or a more complex block
-        self.dct_extractor = nn.Linear(input_size, dct_freq_features, bias=False)
+        if is_main_process():
+            print(f"Using DCT extractor: {dct_extractor}")
+
+        if dct_extractor == 'HybridFrequencyExtractor':
+            self.dct_extractor = HybridFrequencyExtractor(input_size, dct_freq_features)
+        elif dct_extractor == 'DCT':
+            # Placeholder for DCT implementation
+            raise NotImplementedError("DCT extractor is not yet implemented.")
+        else: # default to linear
+            self.dct_extractor = nn.Linear(input_size, dct_freq_features, bias=False)
 
         # Gating network: maps concatenated spatial+frequency features to expert affinities
         self.gating_network = nn.Linear(input_size + dct_freq_features, num_experts, bias=False)

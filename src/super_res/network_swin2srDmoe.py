@@ -315,7 +315,8 @@ class SwinTransformerBlock(nn.Module):
                     lora_rank=MoE_config.get("lora_rank"),
                     lora_alpha=MoE_config.get("lora_alpha"),
                     capacity_factor=MoE_config.get("capacity_factor", 1.25),
-                    dct_freq_features=MoE_config.get("dct_freq_features", 64)
+                    dct_freq_features=MoE_config.get("dct_freq_features", 64),
+                    dct_extractor=MoE_config.get("dct_extractor", "linear")
                 )
             elif version == "CAEC-MoE":
                  self.mlp = CAEC_MoE(
@@ -881,11 +882,12 @@ class Swin2SR(nn.Module):
                 print(f"-->>> Using MoE version: {version}")
 
         # NOTE: MoE_config is now passed directly as a dict.
-        if self.is_moe and ("num_bands" not in MoE_config or MoE_config["num_bands"] is None):
-            MoE_config["num_bands"] = in_chans
-            if is_main_process():
-                print(f"PS-MoE is enabled with config: {MoE_config}")
-                print(f"Set PS-MoE num_bands to {in_chans} from input channels.")
+        if MoE_config:
+            if self.is_moe and ("num_bands" not in MoE_config or MoE_config["num_bands"] is None):
+                MoE_config["num_bands"] = in_chans
+                if is_main_process():
+                    print(f"PS-MoE is enabled with config: {MoE_config}")
+                    print(f"Set PS-MoE num_bands to {in_chans} from input channels.")
 
         self.conv_first = nn.Conv2d(num_in_ch, embed_dim, 3, 1, 1)
 
