@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 
 from .ps_moe import SharedExpertMLP
-from .dct_extractor import  HybridFrequencyExtractor
-from ..utils import is_main_process
+from .dct_extractor import HybridFrequencyExtractor
+from utils import is_main_process
 
 class FreqAwareExpertChoiceMoE(nn.Module):
     """
@@ -53,9 +53,6 @@ class FreqAwareExpertChoiceMoE(nn.Module):
 
         # A simple linear layer to simulate frequency feature extraction (e.g., from DCT)
         # In a full implementation, this could be a small CNN or a more complex block
-        if is_main_process():
-            print(f"Using DCT extractor: {dct_extractor}")
-
         if dct_extractor == 'HybridFrequencyExtractor':
             self.dct_extractor = HybridFrequencyExtractor(input_size, dct_freq_features)
         elif dct_extractor == 'DCT':

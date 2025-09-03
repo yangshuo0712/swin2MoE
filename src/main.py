@@ -2,6 +2,7 @@ import argparse
 import torch
 import os
 import torch.distributed as dist
+from thop import profile
 
 from config import parse_config
 from utils import is_main_process, load_fun, set_deterministic
@@ -9,6 +10,8 @@ from visualize import main as vis_main
 from validation import main as val_main, print_metrics as val_print_metrics, \
         load_metrics
 from debug import measure_avg_time
+from super_res.model import build_model
+from utils import calculate_apc_spc
 # import pdb
 
 def parse_configs():
@@ -36,12 +39,12 @@ def parse_configs():
                         help='denote whether to use accum step')
     # For training and testing
     parser.add_argument('--config',
-                        default="cfgs/sen2venus_v26_8.yml",
+                        default="cfg_n/sen2venus_exp4_2x_v5.yml",
                         help='Configuration file.')
     parser.add_argument('--phase',
                         default='train',
                         choices=['train', 'test', 'mean_std', 'vis',
-                                 'plot_data', 'avg_time'],
+                                 'plot_data', 'avg_time', 'flops', 'apc'],
                         help='Training or testing or play phase.')
     parser.add_argument('--seed',
                         type=int,
@@ -216,7 +219,24 @@ def main(cfg):
                 metrics = val_main(
                     val_dloader, cfg, save_metrics=cfg.eval_method is None)
             if is_main_process():
-                val_print_metrics(metrics)
+                    val_print_metrics(metrics)
+        elif cfg.phase == 'apc':
+            calculate_apc_spc(cfg)
+        elif cfg.phase == 'flops':
+            model = build_model(cfg)
+            input_shape = cfg.visualize.get('input_shape', [4, 128, 128])
+            # Create a dummy input tensor with the correct shape
+            dummy_input = torch.randn(1, *input_shape).to(cfg.device)
+
+            # Calculate FLOPs and Params
+            macs, params = profile(model, inputs=(dummy_input, ))
+
+            # FLOPs is approximately 2 * MACs
+            flops = macs * 2
+
+            print(f"Input shape: {dummy_input.shape}")
+            print(f"FLOPs: {flops / 1e9:.2f} GFLOPs")
+            print(f"Parameters: {params / 1e6:.2f} M")
     except Exception as e:
         print(f"Error occurred: {e}")
         import traceback

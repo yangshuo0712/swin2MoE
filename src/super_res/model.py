@@ -13,6 +13,10 @@ def build_model(cfg):
     version = cfg.super_res.get('version', 'v1')
     if is_main_process():
         print(f'load super_res {version}')
+        if version == 'FEC-DPS-MOE':
+            moe_config = cfg.super_res.model.get('MoE_config', {})
+            dct_extractor = moe_config.get('dct_extractor', 'linear')
+            print(f"Using DCT extractor: {dct_extractor}")
 
     if version == 'v1':
         from .network_swinir import SwinIR as SRModel

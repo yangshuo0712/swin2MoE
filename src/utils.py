@@ -155,3 +155,88 @@ def sync_average_meters(meters, device):
         m.sum = stats[0].item()
         m.count = max(int(stats[1].item()), 1)
         m.avg = m.sum / m.count
+
+def calculate_apc_spc(cfg):
+    """
+    Calculates and prints a comprehensive parameter report for the model,
+    including total parameters, a breakdown of MoE vs. standard MLP layers,
+    SPC/APC for the MoE components, and per-block MoE statistics.
+    """
+    from super_res.model import build_model
+
+    model = build_model(cfg)
+    moe_config = cfg.super_res.model.get('MoE_config')
+
+    total_params = sum(p.numel() for p in model.parameters())
+    total_mlp_params = 0
+    total_moe_params = 0
+    total_experts_params = 0
+    num_moe_blocks = 0
+
+    per_block_stats = []
+
+    # --- Iterate through transformer blocks ---
+    for rstb_layer in model.layers:
+        for block_idx, block in enumerate(rstb_layer.residual_group.blocks):
+            if hasattr(block, 'is_moe') and block.is_moe:
+                num_moe_blocks += 1
+                moe_layer = block.mlp
+                total_moe_params += sum(p.numel() for p in moe_layer.parameters())
+
+                block_experts_params = 0
+                for expert in moe_layer.experts:
+                    block_experts_params += sum(p.numel() for p in expert.parameters())
+                total_experts_params += block_experts_params
+
+                # --- every block SPC/APC ---
+                if moe_config:
+                    k = moe_config.get('k', 2)
+                    num_experts = moe_config.get('num_experts', 8)
+                    params_per_expert = block_experts_params / num_experts
+                    shared_params = sum(p.numel() for p in moe_layer.parameters()) - block_experts_params
+                    block_spc = block_experts_params
+                    block_apc = shared_params + (k * params_per_expert)
+                    per_block_stats.append({
+                        "block_index": block_idx,
+                        "SPC": block_spc,
+                        "APC": block_apc
+                    })
+            else:
+                total_mlp_params += sum(p.numel() for p in block.mlp.parameters())
+
+    transformer_blocks_params = total_mlp_params + total_moe_params
+    other_params = total_params - transformer_blocks_params
+
+    print("\n" + "="*50)
+    print("      Model Parameter Analysis Report")
+    print("="*50)
+
+    print(f"\n[ Overall Model Statistics ]")
+    print(f"  - Total Parameters:          {total_params / 1e6:.4f} M")
+    print(f"  - Transformer Blocks Params: {transformer_blocks_params / 1e6:.4f} M")
+    print(f"  - Other Params (Conv, etc.): {other_params / 1e6:.4f} M")
+
+    print(f"\n[ Standard MLP Layers ]")
+    if total_mlp_params > 0:
+        print(f"  - Total MLP Params: {total_mlp_params / 1e6:.4f} M")
+    else:
+        print("  - No standard MLP layers found.")
+
+    print(f"\n[ Mixture of Experts (MoE) Layers ]")
+    if total_moe_params > 0 and moe_config:
+        shared_params_total = total_moe_params - total_experts_params
+        params_per_expert = total_experts_params / (num_experts * num_moe_blocks)
+        total_spc = total_experts_params
+        total_apc = shared_params_total + (k * params_per_expert * num_moe_blocks)
+
+        print(f"  - Total MoE Params (Shared + All Experts): {total_moe_params / 1e6:.4f} M")
+        print(f"  - Sparse Parameter Count (SPC):            {total_spc / 1e6:.4f} M")
+        print(f"  - Active Parameter Count (APC):            {total_apc / 1e6:.4f} M\n")
+
+        print("  [Per-Block MoE Statistics]")
+        for stat in per_block_stats:
+            print(f"    - Block {stat['block_index']}: SPC = {stat['SPC']}, APC = {stat['APC']:.0f}")
+    else:
+        print("  - No MoE layers found or MoE_config is missing.")
+
+    print("="*50 + "\n")
