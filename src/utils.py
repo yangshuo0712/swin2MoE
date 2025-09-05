@@ -211,18 +211,18 @@ def calculate_apc_spc(cfg):
     print("      Model Parameter Analysis Report")
     print("="*50)
 
-    print(f"\n[ Overall Model Statistics ]")
-    print(f"  - Total Parameters:          {total_params / 1e6:.4f} M")
-    print(f"  - Transformer Blocks Params: {transformer_blocks_params / 1e6:.4f} M")
+    print("\n[ Overall Model Statistics ]")
+    print("  - Total Parameters:          {total_params / 1e6:.4f} M")
+    print("  - Transformer Blocks Params: {transformer_blocks_params / 1e6:.4f} M")
     print(f"  - Other Params (Conv, etc.): {other_params / 1e6:.4f} M")
 
-    print(f"\n[ Standard MLP Layers ]")
+    print("\n[ Standard MLP Layers ]")
     if total_mlp_params > 0:
         print(f"  - Total MLP Params: {total_mlp_params / 1e6:.4f} M")
     else:
         print("  - No standard MLP layers found.")
 
-    print(f"\n[ Mixture of Experts (MoE) Layers ]")
+    print("\n[ Mixture of Experts (MoE) Layers ]")
     if total_moe_params > 0 and moe_config:
         shared_params_total = total_moe_params - total_experts_params
         params_per_expert = total_experts_params / (num_experts * num_moe_blocks)

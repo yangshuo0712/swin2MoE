@@ -6,6 +6,7 @@ losses: {
 }
 super_res: {
   model: {
+    upscale: 2,
     mlp_ratio: 1,
     MoE_config: {
       k: 2,

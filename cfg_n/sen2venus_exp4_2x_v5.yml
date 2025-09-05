@@ -20,11 +20,6 @@ dataset:
   collate_fn: mods.v3.collate_fn
   denorm: mods.v3.uncollate_fn
   printable: mods.v3.printable
-super_res: {
-  model: {
-    upscale: 2,
-  }
-}
 metrics: {
   upscale_factor: 2,
 }
