@@ -26,7 +26,6 @@ torchrun \
   --master_addr 127.0.0.1 \
   --master_port 29502 \
   src/main.py \
-    --config cfg_n/sen2venus_super_res_x2_all.yml \
     --phase 'flops' \
     --output output/2x_DDP_v5 \
     --distributed true \

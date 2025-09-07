@@ -21,7 +21,6 @@ from .caec_moe import CAEC_MoE
 from .fec_dps_moe import FreqAwareExpertChoiceMoE
 from .utils import Mlp, window_partition, window_reverse
 
-
 class WindowAttention(nn.Module):
     r"""Window based multi-head self attention (W-MSA) module with relative position bias.
     It supports both of shifted and non-shifted window.
@@ -424,7 +423,7 @@ class SwinTransformerBlock(nn.Module):
         loss_moe = None
 
         if self.is_moe:
-            res, loss_moe = self.mlp(x_ffn.view(-1, C), band_indices=band_indices)
+            res, loss_moe = self.mlp(x_ffn.view(-1, C), band_indices=band_indices, x_size=(H, W))
             res = res.view(B, L, C)
         else:
             res = self.mlp(x_ffn)

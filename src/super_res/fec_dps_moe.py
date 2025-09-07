@@ -1,8 +1,10 @@
 import torch
 import torch.nn as nn
+from typing import Optional
 
 from .ps_moe import SharedExpertMLP
-from .dct_extractor import HybridFrequencyExtractor
+from .frequency_extractor import HybridFrequencyExtractor
+from .distortionAware import DistortionAwareFrequencyExtractor
 from utils import is_main_process
 
 class FreqAwareExpertChoiceMoE(nn.Module):
@@ -18,10 +20,21 @@ class FreqAwareExpertChoiceMoE(nn.Module):
     from the provided PDF. It relies on existing Parameter-Shared (PS) experts 
     for multi-band data handling and adds the custom routing logic on top.
     """
-    def __init__(self, input_size: int, output_size: int, hidden_size: int, num_experts: int, 
-                 num_bands: int, lora_rank: int, lora_alpha: float,
-                 capacity_factor: float = 1.25, dct_freq_features: int = 64,
-                 dct_extractor:str = 'linear'):
+    def __init__(
+        self,
+        input_size: int,
+        output_size: int,
+        hidden_size: int,
+        num_experts: int,
+        num_bands: int,
+        lora_rank: int,
+        lora_alpha: float,
+        capacity_factor: float = 1.25,
+        dct_freq_features: int = 64,
+        dct_extractor: str = 'linear',
+        dct_K: int = 16,
+        proj_hidden: int = 0,
+    ):
         """
         Initializes the FreqAwareExpertChoiceMoE module.
 
@@ -58,13 +71,21 @@ class FreqAwareExpertChoiceMoE(nn.Module):
         elif dct_extractor == 'DCT':
             # Placeholder for DCT implementation
             raise NotImplementedError("DCT extractor is not yet implemented.")
+        elif dct_extractor == "DistortionAware":
+            self.dct_extractor = DistortionAwareFrequencyExtractor(
+                    input_size=input_size,
+                    out_dim=dct_freq_features,
+                    dct_K=dct_K,
+                    proj_hidden=proj_hidden,
+                    learnable_scale=True,
+                    )
         else: # default to linear
             self.dct_extractor = nn.Linear(input_size, dct_freq_features, bias=False)
 
         # Gating network: maps concatenated spatial+frequency features to expert affinities
         self.gating_network = nn.Linear(input_size + dct_freq_features, num_experts, bias=False)
 
-    def _extract_dct_features(self, tokens: torch.Tensor) -> torch.Tensor:
+    def _extract_dct_features(self, tokens: torch.Tensor, x_size=None) -> torch.Tensor:
         """
         A placeholder for a real DCT feature extraction method.
         Here, we use a simple linear layer to transform the input token features.
@@ -75,7 +96,13 @@ class FreqAwareExpertChoiceMoE(nn.Module):
         Returns:
             torch.Tensor: Extracted frequency-like features of shape [num_tokens, dct_freq_features].
         """
-        return self.dct_extractor(tokens)
+        if hasattr(self.dct_extractor, 'forward'):
+            try:
+                return self.dct_extractor(tokens, x_size=x_size)  # 我们的新实现有这个签名
+            except TypeError:
+                return self.dct_extractor(tokens)                 # 线性退化路径
+        else:
+            return self.dct_extractor(tokens)
 
     def cv_squared(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -87,7 +114,7 @@ class FreqAwareExpertChoiceMoE(nn.Module):
             return torch.tensor([0.0], device=x.device, dtype=x.dtype)
         return x.float().var() / (x.float().mean() ** 2 + eps)
 
-    def forward(self, x: torch.Tensor, band_indices: torch.Tensor, loss_coef: float = 1e-2):
+    def forward(self, x: torch.Tensor, band_indices: torch.Tensor, loss_coef: float = 1e-2, x_size: Optional[tuple]=None):
         """
         Forward pass for the FreqAwareExpertChoiceMoE layer.
 
@@ -106,7 +133,7 @@ class FreqAwareExpertChoiceMoE(nn.Module):
         dtype = x.dtype
 
         # Step 1: Extract frequency features and concatenate
-        freq_features = self._extract_dct_features(x)
+        freq_features = self._extract_dct_features(x, x_size=x_size)
         enhanced_tokens = torch.cat([x, freq_features], dim=1)  # [N, C_in + D_freq]
 
         # Step 2: Compute frequency-aware affinity matrix

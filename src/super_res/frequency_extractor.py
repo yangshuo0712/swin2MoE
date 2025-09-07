@@ -16,7 +16,7 @@ def _build_dct_basis(C: int, K: int) -> torch.Tensor:
     basis = basis / (basis.norm(dim=1, keepdim=True) + 1e-6)
     return basis
 
-class HybridFrequencyExtractorV2(nn.Module):
+class HybridFrequencyExtractor(nn.Module):
     """
     HFEv2: Fixed frequency basis (DCT) + tiny residual branch + normalization.
 
