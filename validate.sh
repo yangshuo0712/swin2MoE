@@ -26,7 +26,7 @@ torchrun \
   --master_addr 127.0.0.1 \
   --master_port 29502 \
   src/main.py \
-    --config cfg_n/sen2venus_exp6_2x_v5.yml \
+    --config cfg_n/sen2venus_exp6_2x_v6.yml \
     --phase test \
     --batch_size 2 \
     --num_workers 16 \
