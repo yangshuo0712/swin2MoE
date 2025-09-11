@@ -12,6 +12,7 @@ from validation import main as val_main, print_metrics as val_print_metrics, \
 from debug import measure_avg_time
 from super_res.model import build_model
 from utils import calculate_apc_spc
+from probe.run_probe import run_probe_pipeline
 # import pdb
 
 def parse_configs():
@@ -44,7 +45,7 @@ def parse_configs():
     parser.add_argument('--phase',
                         default='train',
                         choices=['train', 'test', 'mean_std', 'vis',
-                                 'plot_data', 'avg_time', 'flops', 'apc'],
+                                 'plot_data', 'avg_time', 'flops', 'apc', 'probe'],
                         help='Training or testing or play phase.')
     parser.add_argument('--seed',
                         type=int,
@@ -227,16 +228,16 @@ def main(cfg):
             input_shape = cfg.visualize.get('input_shape', [4, 128, 128])
             # Create a dummy input tensor with the correct shape
             dummy_input = torch.randn(1, *input_shape).to(cfg.device)
-
             # Calculate FLOPs and Params
             macs, params = profile(model, inputs=(dummy_input, ))
-
             # FLOPs is approximately 2 * MACs
             flops = macs * 2
-
             print(f"Input shape: {dummy_input.shape}")
             print(f"FLOPs: {flops / 1e9:.2f} GFLOPs")
             print(f"Parameters: {params / 1e6:.2f} M")
+        elif cfg.phase == 'probe':
+            run_probe_pipeline(cfg)
+
     except Exception as e:
         print(f"Error occurred: {e}")
         import traceback

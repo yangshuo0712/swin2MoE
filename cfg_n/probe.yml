@@ -1,0 +1,11 @@
+# cfgs/probe.yml
+
+__base__: sen2venus_exp6_2x_v6.yml 
+
+output: ./output/probe_results 
+epoch: 9
+
+probe:
+  kind: "checker"  # "stripe" 或 "checker"
+  n_samples: 128
+  batch_size: 1
