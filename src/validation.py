@@ -10,6 +10,7 @@ from utils import AverageMeter, load_fun, sync_average_meters, is_main_process
 from metrics import CC, SAM, ERGAS, piq_psnr, piq_ssim, \
     piq_rmse
 from chk_loader import load_checkpoint
+from hooks import MoEHook
 
 # import pdb
 
@@ -27,6 +28,9 @@ def validate(g_model, val_dloader, metrics, epoch, writer, mode, cfg):
     g_model.eval()
 
     avg_metrics = build_avg_metrics()
+
+    moe_hook = MoEHook(g_model, cfg.device)
+    moe_hook.attach()
 
     use_minmax = cfg.dataset.get('stats', {}).get('use_minmax', False)
     dset = cfg.dataset
@@ -71,6 +75,12 @@ def validate(g_model, val_dloader, metrics, epoch, writer, mode, cfg):
                     val = fun(sr[i][None], hr[i][None])
                     avg_metrics[k].update(val, n=1)
 
+    moe_stats = moe_hook.get_stats()
+    for k, v in moe_stats.items():
+        if k not in avg_metrics:
+            avg_metrics[k] = AverageMeter(k, ":.4f")
+        avg_metrics[k].update(v)
+
     # --- sync all metrics ---
     sync_average_meters(avg_metrics, cfg.device)
     if writer is not None and is_main_process():
@@ -78,6 +88,8 @@ def validate(g_model, val_dloader, metrics, epoch, writer, mode, cfg):
                  val = v.avg.item() if isinstance(v.avg, torch.Tensor) else float(v.avg)
                  # writer.add_scalar("{}/{}".format(mode, k), v.avg.item(), epoch+1)
                  writer.add_scalar(f"{mode}/{k}", val, epoch+1)
+                 for k,v in moe_stats.items():
+                     writer.add_scalar(f"{mode}/{k}", v, epoch+1)
 
     if cfg.get('eval_return_to_train', True):
         g_model.train()

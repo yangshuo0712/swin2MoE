@@ -156,6 +156,35 @@ def sync_average_meters(meters, device):
         m.count = max(int(stats[1].item()), 1)
         m.avg = m.sum / m.count
 
+def _to_tensor(x) -> torch.Tensor:
+    if isinstance(x, torch.Tensor):
+        return x
+    return torch.as_tensor(x)
+
+def cv(x) -> torch.Tensor:
+    x = _to_tensor(x).to(dtype=torch.float32)
+    m = x.mean()
+    if torch.isclose(m.abs(), torch.tensor(0., device=x.device)):
+        return torch.tensor(0., device=x.device)
+    return x.std(correction=0) / m
+
+def cv2(x) -> torch.Tensor:
+    x = _to_tensor(x).to(dtype=torch.float32)
+    m = x.mean()
+    if torch.isclose(m.abs(), torch.tensor(0., device=x.device)):
+        return torch.tensor(0., device=x.device)
+    return x.var(correction=0) / (m * m)
+
+def gini(x) -> torch.Tensor:
+    x = _to_tensor(x).to(dtype=torch.float32).clamp_min(0)
+    total = x.sum()
+    if total <= 0:
+        return torch.tensor(0., device=x.device)
+    n = x.numel()
+    sorted_x, _ = torch.sort(x)  # 升序
+    idx = torch.arange(1, n + 1, device=x.device, dtype=sorted_x.dtype)
+    return (2.0 * (idx * sorted_x).sum()) / (n * total) - (n + 1.0) / n
+
 def calculate_apc_spc(cfg):
     """
     Calculates and prints a comprehensive parameter report for the model,
@@ -240,3 +269,4 @@ def calculate_apc_spc(cfg):
         print("  - No MoE layers found or MoE_config is missing.")
 
     print("="*50 + "\n")
+

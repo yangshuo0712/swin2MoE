@@ -12,7 +12,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
 # Select visible GPUs (physical IDs 1 and 2)
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=1
 export TORCH_DISTRIBUTED_DEBUG=DETAIL
 # export NCCL_DEBUG=INFO
 # export NCCL_DEBUG_SUBSYS=ALL
@@ -24,16 +24,16 @@ torchrun \
   --master_addr 127.0.0.1 \
   --master_port 29501 \
   src/main.py \
-    --config cfg_n/sen2venus_exp6_2x_v5.yml \
+    --config cfg_n/sen2venus_exp6_2x_v6.yml \
     --phase train \
-    --batch_size 12 \
+    --batch_size 2 \
     --epochs 25 \
     --num_workers 16 \
     --distributed true \
     --AMP true \
     --use_accum true \
-    --output ./output/2x_DDP_v5
+    --debug_iters 10 \
+    --output ./output/2x_DDP_v6_debug
 
-    # --debug_iters 10 \
     # --config cfg_n/sen2venus_exp4_2x_v5.yml \
     #

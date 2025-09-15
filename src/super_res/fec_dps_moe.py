@@ -2,10 +2,9 @@ import torch
 import torch.nn as nn
 from typing import Optional
 
-from .ps_moe import SharedExpertMLP
+from .ps_moe import WeightedSharedExpertMLP
 from .frequency_extractor import HybridFrequencyExtractor
 from .distortionAware import DistortionAwareFrequencyExtractor
-from utils import is_main_process
 
 class FreqAwareExpertChoiceMoE(nn.Module):
     """
@@ -60,7 +59,7 @@ class FreqAwareExpertChoiceMoE(nn.Module):
 
         # Experts (using the existing SharedExpertMLP)
         self.experts = nn.ModuleList([
-            SharedExpertMLP(input_size + 1, hidden_size, output_size, num_bands, lora_rank, lora_alpha)
+            WeightedSharedExpertMLP(input_size + 1, hidden_size, output_size, num_bands, lora_rank, lora_alpha)
             for _ in range(num_experts)
         ])
 
@@ -98,9 +97,9 @@ class FreqAwareExpertChoiceMoE(nn.Module):
         """
         if hasattr(self.dct_extractor, 'forward'):
             try:
-                return self.dct_extractor(tokens, x_size=x_size)  # 我们的新实现有这个签名
+                return self.dct_extractor(tokens, x_size=x_size)
             except TypeError:
-                return self.dct_extractor(tokens)                 # 线性退化路径
+                return self.dct_extractor(tokens)
         else:
             return self.dct_extractor(tokens)
 
@@ -112,76 +111,58 @@ class FreqAwareExpertChoiceMoE(nn.Module):
         eps = 1e-10
         if x.shape[0] == 1:
             return torch.tensor([0.0], device=x.device, dtype=x.dtype)
-        return x.float().var() / (x.float().mean() ** 2 + eps)
+        return x.float().var(correction=0) / (x.float().mean() ** 2 + eps)
 
-    def forward(self, x: torch.Tensor, band_indices: torch.Tensor, loss_coef: float = 1e-2, x_size: Optional[tuple]=None):
+def forward(self, x: torch.Tensor, band_weights: torch.Tensor,
+                loss_coef: float = 1e-2, x_size: Optional[tuple]=None):
         """
-        Forward pass for the FreqAwareExpertChoiceMoE layer.
-
-        Args:
-            x (torch.Tensor): Input tokens of shape [num_tokens, input_size].
-            band_indices (torch.Tensor): Integer band indices for each token, shape [num_tokens].
-            loss_coef (float): Multiplier for the load-balancing loss.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor]:
-                - final_output: The combined output of all experts, shape [num_tokens, output_size].
-                - loss: The load-balancing loss for the MoE layer.
+        x: [N, C]
+        band_weights: [N, num_bands]  <-- soft weights aligned with tokens
         """
         num_tokens, in_channels = x.shape
         device = x.device
         dtype = x.dtype
 
-        # Step 1: Extract frequency features and concatenate
         freq_features = self._extract_dct_features(x, x_size=x_size)
-        enhanced_tokens = torch.cat([x, freq_features], dim=1)  # [N, C_in + D_freq]
-
-        # Step 2: Compute frequency-aware affinity matrix
+        enhanced_tokens = torch.cat([x, freq_features], dim=1)  # [N, C + D_freq]
         affinity_scores = self.gating_network(enhanced_tokens)  # [N, E]
 
-        # Step 3: Expert Choice Routing
         expert_capacity = max(1, int((num_tokens / float(self.num_experts)) * self.capacity_factor))
         k = min(expert_capacity, num_tokens)
-
         expert_scores_transposed = affinity_scores.transpose(0, 1)  # [E, N]
         top_k_scores, top_k_indices = torch.topk(expert_scores_transposed, k=k, dim=1)
 
-        # Step 4: Create dispatch mask and gating weights
-        dispatch_mask = torch.zeros((num_tokens, self.num_experts), device=device, dtype=torch.bool)  # [N, E]
-        rows = top_k_indices  # [E, k]
-        cols = torch.arange(self.num_experts, device=device).unsqueeze(1).expand_as(rows)  # [E, k]
-        dispatch_mask[rows, cols] = True  #(token, expert)
+        dispatch_mask = torch.zeros((num_tokens, self.num_experts), device=device, dtype=torch.bool)
+        rows = top_k_indices
+        cols = torch.arange(self.num_experts, device=device).unsqueeze(1).expand_as(rows)
+        dispatch_mask[rows, cols] = True
 
-        uncovered = ~dispatch_mask.any(dim=1)  # [N]
+        uncovered = ~dispatch_mask.any(dim=1)
         if uncovered.any():
-            best_expert = affinity_scores[uncovered].argmax(dim=1)  # [n_uncovered]
+            best_expert = affinity_scores[uncovered].argmax(dim=1)
             dispatch_mask[uncovered, best_expert] = True
 
-        masked_scores = affinity_scores.masked_fill(~dispatch_mask, -float('inf'))  # [N, E]
-        gating_weights = torch.softmax(masked_scores, dim=1)  # [N, E]
+        masked_scores = affinity_scores.masked_fill(~dispatch_mask, float('-inf'))
+        gating_weights = torch.softmax(masked_scores, dim=1)
         gating_weights = torch.where(dispatch_mask, gating_weights, torch.zeros_like(gating_weights))
 
-        # Step 5: Dispatch tokens and compute expert outputs
         final_output = torch.zeros((num_tokens, self.output_size), device=device, dtype=dtype)
-        
+
         for e in range(self.num_experts):
-            selected_token_indices = top_k_indices[e]
-            expert_tokens = x[selected_token_indices]
-            expert_band_indices = band_indices[selected_token_indices]
-            expert_gating_weights = gating_weights[selected_token_indices, e].unsqueeze(1)
-            
-            # The SharedExpertMLP expects band_indices appended as a feature
-            expert_inputs_with_band_info = torch.cat([expert_tokens, expert_band_indices.float().unsqueeze(1)], dim=1)
+            selected_token_indices = torch.nonzero(dispatch_mask[:, e], as_tuple=False).squeeze(1)
+            if selected_token_indices.numel() == 0:
+                continue
 
-            # Expert computation
-            expert_output = self.experts[e](expert_inputs_with_band_info)
+            expert_tokens   = x[selected_token_indices]                       # [n_e, C]
+            expert_bw       = band_weights[selected_token_indices]            # [n_e, num_bands]
+            expert_gate     = gating_weights[selected_token_indices, e].unsqueeze(1)  # [n_e,1]
 
-            # Accumulate weighted outputs using index_add_ for efficiency
-            final_output.index_add_(0, selected_token_indices, expert_output * expert_gating_weights)
+            expert_output = self.experts[e](expert_tokens, expert_bw)         # [n_e, C]
+            final_output.index_add_(0, selected_token_indices, expert_output * expert_gate)
 
-        # Calculate load-balancing loss
         importance = gating_weights.sum(0)
         load = dispatch_mask.sum(0)
         loss = (self.cv_squared(importance) + self.cv_squared(load)) * loss_coef
 
+        self.debug_outputs = {'importance': importance.detach(), 'load': load.detach()}
         return final_output, loss

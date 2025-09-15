@@ -286,3 +286,51 @@ class MoE(nn.Module):
         y = dispatcher.combine(expert_outputs)  # [N, C]
 
         return y.view_as(x), loss
+
+class WeightedSharedExpertMLP(nn.Module):
+    """
+    Parameter-shared MLP + per-band LoRA, with soft band weights.
+    forward(x, band_weights) where band_weights is [N, num_bands] and rows sum to 1.
+    """
+    def __init__(self, in_features, hidden_features, out_features, num_bands, rank, alpha):
+        super().__init__()
+        self.num_bands = num_bands
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = nn.GELU()
+        self.fc2 = nn.Linear(hidden_features, out_features)
+
+        # per-band LoRA parameters
+        self.lora_fc1_A = nn.Parameter(torch.zeros(num_bands, in_features,  rank))
+        self.lora_fc1_B = nn.Parameter(torch.zeros(num_bands, rank,         hidden_features))
+        self.lora_fc2_A = nn.Parameter(torch.zeros(num_bands, hidden_features, rank))
+        self.lora_fc2_B = nn.Parameter(torch.zeros(num_bands, rank,           out_features))
+
+        self.scaling = alpha / rank
+        self.reset_adapter_parameters()
+
+    def reset_adapter_parameters(self):
+        for i in range(self.num_bands):
+            nn.init.kaiming_uniform_(self.lora_fc1_A[i], a=math.sqrt(5))
+            nn.init.zeros_(self.lora_fc1_B[i])
+            nn.init.kaiming_uniform_(self.lora_fc2_A[i], a=math.sqrt(5))
+            nn.init.zeros_(self.lora_fc2_B[i])
+
+    def forward(self, x, band_weights):
+        """
+        x: [N, in_features]
+        band_weights: [N, num_bands] (soft weights; one-hot also works)
+        """
+        # fc1: shared + weighted LoRA
+        h_shared = self.fc1(x)  # [N, hidden]
+        t1 = torch.einsum('ni, bir -> nbr', x, self.lora_fc1_A)      # [N,B,rank]
+        l1 = torch.einsum('nbr, brh -> nbh', t1, self.lora_fc1_B)    # [N,B,hidden]
+        delta1 = (band_weights.unsqueeze(-1) * l1).sum(dim=1) * self.scaling
+        h = self.act(h_shared + delta1)
+
+        # fc2: shared + weighted LoRA
+        out_shared = self.fc2(h)  # [N, out]
+        t2 = torch.einsum('nh, bhr -> nbr', h, self.lora_fc2_A)      # [N,B,rank]
+        l2 = torch.einsum('nbr, bro -> nbo', t2, self.lora_fc2_B)    # [N,B,out]
+        delta2 = (band_weights.unsqueeze(-1) * l2).sum(dim=1) * self.scaling
+
+        return out_shared + delta2

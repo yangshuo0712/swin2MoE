@@ -375,7 +375,7 @@ class SwinTransformerBlock(nn.Module):
         attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
         return attn_mask
 
-    def forward(self, x, x_size, band_indices):
+    def forward(self, x, x_size, band_weights):
         """
         Forward pass of the Swin Transformer Block.
 
@@ -423,7 +423,7 @@ class SwinTransformerBlock(nn.Module):
         loss_moe = None
 
         if self.is_moe:
-            res, loss_moe = self.mlp(x_ffn.view(-1, C), band_indices=band_indices, x_size=(H, W))
+            res, loss_moe = self.mlp(x_ffn.view(-1, C), band_weights=band_weights, x_size=(H, W))
             res = res.view(B, L, C)
         else:
             res = self.mlp(x_ffn)
@@ -543,7 +543,7 @@ class BasicLayer(nn.Module):
         else:
             self.downsample = None
 
-    def forward(self, x, x_size, band_indices):
+    def forward(self, x, x_size, band_weights):
         """
         Forward pass of the BasicLayer.
 
@@ -559,7 +559,7 @@ class BasicLayer(nn.Module):
         """
         loss_moe_all = 0.0
         for blk in self.blocks:
-            x, loss_moe = blk(x, x_size, band_indices)
+            x, loss_moe = blk(x, x_size, band_weights)
             if loss_moe is not None:
                 loss_moe_all += loss_moe
 
@@ -696,7 +696,7 @@ class RSTB(nn.Module):
             img_size=img_size, patch_size=patch_size, in_chans=dim, embed_dim=dim, norm_layer=None
         )
 
-    def forward(self, x, x_size, band_indices):
+    def forward(self, x, x_size, band_weights):
         """
         Forward pass of the Residual Swin Transformer Block (RSTB).
 
@@ -711,7 +711,7 @@ class RSTB(nn.Module):
                 - The aggregated MoE loss, or None.
         """
         shortcut = x
-        res, loss_moe = self.residual_group(x, x_size, band_indices)
+        res, loss_moe = self.residual_group(x, x_size, band_weights)
         res = self.conv(self.patch_unembed(res, x_size))
         res = self.patch_embed(res)
         res = res + shortcut
@@ -874,7 +874,24 @@ class Swin2SR(nn.Module):
         self.upsampler = upsampler
         self.window_size = window_size
         self.is_moe = MoE_config is not None
-        
+
+        ############## band weight config ################
+        self.band_softmax_tau = 1.0 
+        self.enable_band_correction = False
+
+        num_bands_for_weight = in_chans           # =4
+        self.band_logit_bias = nn.Parameter(torch.zeros(1, num_bands_for_weight, 1, 1))
+        self.band_head = nn.Sequential(
+            nn.Conv2d(num_bands_for_weight, 16, 3, 1, 1), nn.ReLU(inplace=True),
+            nn.Conv2d(16, num_bands_for_weight, 1, 1, 0)
+        )
+        with torch.no_grad():
+            for m in self.band_head.modules():
+                if isinstance(m, nn.Conv2d):
+                    nn.init.zeros_(m.bias)
+            nn.init.zeros_(self.band_head[-1].weight)
+            nn.init.zeros_(self.band_head[-1].bias) 
+
         if self.is_moe:
             version = model_version if model_version else "PS-MoE"
             if is_main_process():
@@ -985,6 +1002,31 @@ class Swin2SR(nn.Module):
 
         self.apply(self._init_weights)
 
+    def _compute_band_weights(self, x_pre):
+        """
+        x_pre: [B, C=num_bands, H_pad, W_pad]
+        return band_weights: [B*L, num_bands] aligned with patch_embed tokens
+        """
+        ps_h, ps_w = self.patch_embed.patch_size
+        B0, C0, H0, W0 = x_pre.shape
+
+        energy = x_pre.abs()
+        if ps_h > 1 or ps_w > 1:
+            energy = F.avg_pool2d(energy, kernel_size=(ps_h, ps_w), stride=(ps_h, ps_w))  # [B,C,H',W']
+
+        logits = energy / self.band_softmax_tau
+
+        if self.enable_band_correction:
+            logits = logits + self.band_logit_bias
+            delta = self.band_head(x_pre)
+            if ps_h > 1 or ps_w > 1:
+                delta = F.avg_pool2d(delta, kernel_size=(ps_h, ps_w), stride=(ps_h, ps_w))
+            logits = logits + delta
+
+        w_map = torch.softmax(logits, dim=1)                                   # [B,C,H',W']
+        band_weights = w_map.flatten(2).transpose(1, 2).contiguous().view(-1, C0)  # [B*L,C]
+        return band_weights
+
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=0.02)
@@ -1009,7 +1051,7 @@ class Swin2SR(nn.Module):
         x = F.pad(x, (0, mod_pad_w, 0, mod_pad_h), "reflect")
         return x
 
-    def forward_features(self, x, band_indices):
+    def forward_features(self, x, band_weights):
         """
         Forward pass through the deep feature extraction body of the model.
 
@@ -1032,9 +1074,9 @@ class Swin2SR(nn.Module):
 
         loss_moe_all = 0.0
         for layer in self.layers:
-            x, loss_moe = layer(x, x_size, band_indices)
+            x, loss_moe = layer(x, x_size, band_weights)
             if loss_moe is not None:
-                loss_moe_all += loss_moe
+                loss_moe_all = loss_moe_all + loss_moe
 
         x = self.norm(x)
         x = self.patch_unembed(x, x_size)
@@ -1061,15 +1103,15 @@ class Swin2SR(nn.Module):
         B, L, C = x_tokens.shape
 
         loss_moe = 0.0
-        band_indices = None
+        band_weights = None
         if self.is_moe:
             num_bands = self.conv_first.in_channels
             num_patches_per_band_item = L // num_bands
             single_band_indices = torch.arange(num_bands, device=x.device, dtype=torch.long)
             single_band_indices = single_band_indices.repeat_interleave(num_patches_per_band_item)
-            band_indices = single_band_indices.repeat(B)
+            band_weights = self._compute_band_weights(x_pre)
 
-        res, loss_moe = self.forward_features(x_tokens, band_indices)
+        res, loss_moe = self.forward_features(x_tokens, band_weights)
 
         if self.upsampler == "pixelshuffledirect":
             x_out = self.conv_after_body(res) + x_feat
@@ -1103,3 +1145,9 @@ class Swin2SR(nn.Module):
         if self.upsampler == "pixelshuffledirect":
             flops += self.upsample.flops()
         return flops
+
+    def set_band_correction_enabled(self, enabled: bool):
+        self.enable_band_correction = bool(enabled)
+
+    def set_band_softmax_tau(self, tau: float):
+        self.band_softmax_tau = float(tau)
