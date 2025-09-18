@@ -24,7 +24,7 @@ torchrun \
   --master_addr 127.0.0.1 \
   --master_port 29501 \
   src/main.py \
-    --config cfg_n/sen2venus_exp6_2x_v6.yml \
+    --config cfg_n/sen2venus_exp6_2x_v7.yml \
     --phase train \
     --batch_size 2 \
     --epochs 25 \
@@ -33,7 +33,7 @@ torchrun \
     --AMP true \
     --use_accum true \
     --debug_iters 10 \
-    --output ./output/2x_DDP_v6_debug
+    --output ./output/2x_DDP_v7_debug
 
     # --config cfg_n/sen2venus_exp4_2x_v5.yml \
     #

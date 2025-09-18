@@ -11,14 +11,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint
 from timm.layers import DropPath, to_2tuple, trunc_normal_
 from utils import is_main_process
 
 from .ps_moe import MoE
-from .moe_cadr import ComplexityAwareMoE
-from .caec_moe import CAEC_MoE
-from .fec_dps_moe import FreqAwareExpertChoiceMoE
+from .daec_moe import DisAwareExpertChoiceMoE
 from .utils import Mlp, window_partition, window_reverse
 
 class WindowAttention(nn.Module):
@@ -305,7 +302,7 @@ class SwinTransformerBlock(nn.Module):
         if MoE_config:
             version = model_version
             if version == "FEC-DPS-MOE":
-                self.mlp = FreqAwareExpertChoiceMoE(
+                self.mlp = DisAwareExpertChoiceMoE(
                     input_size=dim,
                     output_size=dim,
                     hidden_size=mlp_hidden_dim,
@@ -318,25 +315,9 @@ class SwinTransformerBlock(nn.Module):
                     dct_extractor=MoE_config.get("dct_extractor", "linear")
                 )
             elif version == "CAEC-MoE":
-                 self.mlp = CAEC_MoE(
-                    input_size=dim, output_size=dim, hidden_size=mlp_hidden_dim,
-                    num_experts=MoE_config.get("num_experts", 8),
-                    k=MoE_config.get("k", 2),
-                    num_bands=MoE_config.get("num_bands"),
-                    lora_rank=MoE_config.get("lora_rank"),
-                    lora_alpha=MoE_config.get("lora_alpha"),
-                    capacity_factor=MoE_config.get("capacity_factor", 1.25),
-                    complexity_loss_weight=MoE_config.get("complexity_loss_weight", 0.1)
-                )
+                pass
             elif version == "CADR":
-                 self.mlp = ComplexityAwareMoE(
-                    input_size=dim, output_size=dim, hidden_size=mlp_hidden_dim,
-                    num_experts=MoE_config.get("num_experts", 8),
-                    k=MoE_config.get("k", 2),
-                    num_bands=MoE_config.get("num_bands"),
-                    lora_rank=MoE_config.get("lora_rank"),
-                    lora_alpha=MoE_config.get("lora_alpha"),
-                 )
+                pass
             else: # Default to standard PS-MoE
                 self.mlp = MoE(
                     input_size=dim, output_size=dim, hidden_size=mlp_hidden_dim,
@@ -423,8 +404,13 @@ class SwinTransformerBlock(nn.Module):
         loss_moe = None
 
         if self.is_moe:
-            res, loss_moe = self.mlp(x_ffn.view(-1, C), band_weights=band_weights, x_size=(H, W))
-            res = res.view(B, L, C)
+            x_prev_tokens = shortcut2.view(-1, C)
+            res, loss_moe = self.mlp(
+                    x_ffn.view(-1, C),
+                    band_weights=band_weights,
+                    x_size=(H, W),
+                    x_prev_tokens=x_prev_tokens
+                )
         else:
             res = self.mlp(x_ffn)
 
@@ -972,9 +958,9 @@ class Swin2SR(nn.Module):
             self.conv_after_body = nn.Sequential(
                 nn.Conv2d(embed_dim, embed_dim // 4, 3, 1, 1),
                 nn.LeakyReLU(negative_slope=0.2, inplace=True),
-                nn.Conv2d(dim // 4, dim // 4, 1, 1, 0),
+                nn.Conv2d(embed_dim // 4, embed_dim // 4, 1, 1, 0),
                 nn.LeakyReLU(negative_slope=0.2, inplace=True),
-                nn.Conv2d(dim // 4, dim, 3, 1, 1),
+                nn.Conv2d(embed_dim // 4, embed_dim, 3, 1, 1),
             )
 
         if self.upsampler == "pixelshuffle":

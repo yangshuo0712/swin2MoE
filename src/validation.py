@@ -29,7 +29,7 @@ def validate(g_model, val_dloader, metrics, epoch, writer, mode, cfg):
 
     avg_metrics = build_avg_metrics()
 
-    moe_hook = MoEHook(g_model, cfg.device)
+    moe_hook = MoEHook(g_model)
     moe_hook.attach()
 
     use_minmax = cfg.dataset.get('stats', {}).get('use_minmax', False)

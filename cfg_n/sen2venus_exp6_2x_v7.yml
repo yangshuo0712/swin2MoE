@@ -65,7 +65,7 @@ super_res:
 metrics:
   upscale_factor: 2
 
-train:
+train_step:
   band_correction_warmup_epochs: 5
 
 visualize:

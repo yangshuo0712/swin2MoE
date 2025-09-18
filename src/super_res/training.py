@@ -119,7 +119,7 @@ def train_epoch(model, train_dloader, losses, optimizer, scheduler, epoch, write
     debug_iters = getattr(cfg, "debug_iters", None)
     weights = cfg.losses.weights
 
-    warm_e = getattr(cfg, 'train', {}).get('band_correction_warmup_epochs', 20)
+    warm_e = getattr(cfg, 'train_setp', {}).get('band_correction_warmup_epochs', 20)
     m = unwrap_model(model)
     if (not getattr(m, 'enable_band_correction', False)) and (epoch >= warm_e):
         m.enable_band_correction = True
@@ -268,13 +268,8 @@ def train_epoch(model, train_dloader, losses, optimizer, scheduler, epoch, write
                 pass
 
         if writer is not None and moe_hook is not None:
-            try:
-                stats = moe_hook.get_stats()
-                for k, v in stats.items():
-                    writer.add_scalar(f"moe/{k}", float(v), index)
-                moe_hook.stats.clear() 
-            except Exception:
-                pass
+            moe_hook.step(index)
+            moe_hook.flush(writer)
 
         if writer is not None:
             debug.log_hr_stats(lr, sr, hr, writer, index, cfg)
@@ -320,7 +315,7 @@ def acc_train_epoch(model, train_dloader, losses, optimizer, schedule, epoch, wr
     accumulation_steps = getattr(cfg, 'accumulation_steps', 4)
     weights = cfg.losses.weights
 
-    warm_e = getattr(cfg, 'train', {}).get('band_correction_warmup_epochs', 20)
+    warm_e = getattr(cfg, 'train_step', {}).get('band_correction_warmup_epochs', 20)
     m = unwrap_model(model)
     if (not getattr(m, 'enable_band_correction', False)) and (epoch >= warm_e):
         m.enable_band_correction = True
@@ -453,13 +448,8 @@ def acc_train_epoch(model, train_dloader, losses, optimizer, schedule, epoch, wr
                     pass
 
             if writer is not None and moe_hook is not None:
-                try:
-                    stats = moe_hook.get_stats()
-                    for k, v in stats.items():
-                        writer.add_scalar(f"moe/{k}", float(v), idx)
-                    moe_hook.stats.clear()
-                except Exception:
-                    pass
+                moe_hook.step(index)
+                moe_hook.flush(writer)
 
             if writer is not None:
                 debug.log_hr_stats(lr, sr, hr, writer, idx, cfg)
